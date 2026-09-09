@@ -704,39 +704,50 @@ export class ChatView extends ItemView {
         const contentEl = lastMsgDiv?.querySelector(".message-content") as HTMLElement;
 
         let fullContent = "";
-        let tokenCount = 0;
+        let lastRenderTime = 0;
+        let painted = false;
+
+        // Keep something in the bubble while we wait: reasoning models can go
+        // several seconds before emitting their first delta.
+        if (contentEl) {
+          const pending = contentEl.createEl("span");
+          pending.innerText = "Journal is thinking...";
+          pending.style.opacity = "0.7";
+          pending.style.fontStyle = "italic";
+        }
+
+        const renderStream = async () => {
+          if (!contentEl) return;
+          contentEl.empty();
+          await MarkdownRenderer.renderMarkdown(fullContent, contentEl, "", this.component);
+          this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+        };
 
         try {
-          for await (const token of this.llmService.streamCompletion(contextMessages, config)) {
-            fullContent += token;
-            tokenCount++;
+          for await (const chunk of this.llmService.streamCompletion(contextMessages, config)) {
+            fullContent += chunk;
 
-            // Throttle DOM updates: re-render every 3 tokens
-            if (tokenCount % 3 === 0 && contentEl) {
-              contentEl.empty();
-              await MarkdownRenderer.renderMarkdown(fullContent, contentEl, "", this.component);
-              this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+            // Chunk sizes vary enormously between providers — Gemini can deliver a
+            // whole answer in one or two deltas — so throttle on elapsed time
+            // rather than chunk count, and always paint the first one.
+            const now = Date.now();
+            if (!painted || now - lastRenderTime >= 60) {
+              painted = true;
+              lastRenderTime = now;
+              await renderStream();
             }
-          }
-
-          // Final render with complete content
-          if (contentEl) {
-            contentEl.empty();
-            await MarkdownRenderer.renderMarkdown(fullContent, contentEl, "", this.component);
-            this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
           }
         } catch (streamError: any) {
-          // If streaming fails partway, keep whatever we got
+          // Keep whatever arrived before the failure
           console.error("Streaming error:", streamError);
-          if (!fullContent) {
-            // If we got nothing, fall back to non-streaming
-            fullContent = await this.llmService.completion(contextMessages, config);
-            if (contentEl) {
-              contentEl.empty();
-              await MarkdownRenderer.renderMarkdown(fullContent, contentEl, "", this.component);
-            }
-          }
         }
+
+        // A stream that dies before its first delta, or yields nothing at all,
+        // would leave the bubble blank — fall back to a single request.
+        if (!fullContent) {
+          fullContent = await this.llmService.completion(contextMessages, config);
+        }
+        await renderStream();
 
         assistantMsg.content = fullContent;
 
