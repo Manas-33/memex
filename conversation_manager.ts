@@ -18,6 +18,8 @@ export interface Message {
   content: string;
   timestamp: number;
   citations?: CitationVerification[];
+  /** RAG ran for this message but nothing cleared the similarity threshold */
+  noContextFound?: boolean;
 }
 
 export interface Conversation {

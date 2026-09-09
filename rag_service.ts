@@ -346,7 +346,18 @@ export class RAGService {
     const chunkMap = new Map<number, SearchResult>();
 
     if (chunks.length === 0) {
-      return { formattedContext: "", chunkMap };
+      // Nothing cleared the similarity threshold. Say so explicitly rather than
+      // sending no context at all — an empty context silently hands the question
+      // back to the model's own prior knowledge, which is how ungrounded answers
+      // get presented as if they came from the vault.
+      const formattedContext =
+        "You are answering a question using the user's personal notes.\n\n" +
+        "A search of those notes returned NO passages that meet the relevance " +
+        "threshold, so you have no source material for this question.\n\n" +
+        "Tell the user plainly that you could not find anything about this in " +
+        "their notes. Do not answer from prior knowledge, do not guess, and do " +
+        "not cite anything.";
+      return { formattedContext, chunkMap };
     }
 
     let context = `You are answering a question using the user's personal notes. The numbered excerpts below are the ONLY source of truth for this answer.

@@ -751,6 +751,12 @@ export class ChatView extends ItemView {
 
         assistantMsg.content = fullContent;
 
+        // RAG ran but nothing cleared the threshold. Record it on the message so
+        // the warning survives a reload, not just this render.
+        if (ragContext && ragContext.retrievedChunks.length === 0) {
+          assistantMsg.noContextFound = true;
+        }
+
         const trustMode = this.currentConversation!.config?.citationTrustMode ?? this.settings.citationTrustMode;
 
         if (trustMode !== "off" && ragContext?.chunkMap && ragContext.chunkMap.size > 0) {
@@ -822,6 +828,10 @@ export class ChatView extends ItemView {
           if (contentEl) {
             this.renderCitationsPanel(contentEl.parentElement!, assistantMsg.citations!);
           }
+        }
+
+        if (assistantMsg.noContextFound && contentEl) {
+          this.renderNoContextBanner(contentEl.parentElement!);
         }
 
         await this.conversationManager.saveConversation(this.currentConversation!);
@@ -980,6 +990,10 @@ export class ChatView extends ItemView {
         if (message.citations && message.citations.length > 0) {
           this.renderCitationBadges(content, message.citations);
           this.renderCitationsPanel(msgDiv, message.citations);
+        }
+
+        if (message.noContextFound) {
+          this.renderNoContextBanner(msgDiv);
         }
     } else {
         content.innerText = message.content;
@@ -1438,6 +1452,21 @@ Return ONLY valid JSON in this exact format, no other text:
         reasonEl.textContent = citation.reason;
       }
     }
+  }
+
+  renderNoContextBanner(msgDiv: HTMLElement) {
+    if (msgDiv.querySelector(".memex-no-context")) return;
+
+    const banner = msgDiv.createEl("div", { cls: "memex-no-context" });
+    banner.style.marginTop = "10px";
+    banner.style.padding = "6px 8px";
+    banner.style.borderRadius = "4px";
+    banner.style.fontSize = "0.85em";
+    banner.style.lineHeight = "1.4";
+    banner.style.borderLeft = "3px solid var(--text-warning, #ffc107)";
+    banner.style.backgroundColor = "rgba(255, 193, 7, 0.1)";
+    banner.textContent =
+      "No notes cleared the similarity threshold for this question — this answer is not grounded in your vault.";
   }
 
   async onClose() {
