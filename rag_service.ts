@@ -6,6 +6,8 @@ export interface RAGContext {
   query: string;
   retrievedChunks: SearchResult[];
   formattedContext: string;
+  /** Maps citation number (1-based) to the SearchResult it refers to */
+  chunkMap: Map<number, SearchResult>;
 }
 
 export class RAGService {
@@ -314,23 +316,21 @@ export class RAGService {
     }
 
     try {
-      // Generate embedding for the query
       const queryEmbedding = await this.embeddingService.generateEmbedding(query);
 
-      // Search for similar chunks
       const retrievedChunks = await this.vectorStore.search(
         queryEmbedding,
         topK,
         similarityThreshold
       );
 
-      // Format the context for the LLM
-      const formattedContext = this.formatContext(retrievedChunks);
+      const { formattedContext, chunkMap } = this.formatContext(retrievedChunks);
 
       return {
         query,
         retrievedChunks,
         formattedContext,
+        chunkMap,
       };
     } catch (error) {
       console.error("Failed to retrieve context:", error);
@@ -339,41 +339,53 @@ export class RAGService {
   }
 
   /**
-   * Format retrieved chunks into a context string for the LLM
+   * Format retrieved chunks as numbered references for citation support.
+   * Returns both the formatted string and a 1-based chunkMap for downstream lookup.
    */
-  private formatContext(chunks: SearchResult[]): string {
+  private formatContext(chunks: SearchResult[]): { formattedContext: string; chunkMap: Map<number, SearchResult> } {
+    const chunkMap = new Map<number, SearchResult>();
+
     if (chunks.length === 0) {
-      return "";
+      return { formattedContext: "", chunkMap };
     }
 
-    let context = "Here are relevant excerpts from your notes:\n\n";
+    let context = `You are answering a question using the user's personal notes. The numbered excerpts below are the ONLY source of truth for this answer.
 
-    // Group chunks by file
-    const chunksByFile = new Map<string, SearchResult[]>();
-    for (const chunk of chunks) {
+Rules:
+1. Use ONLY information found in the excerpts below. Do not rely on outside or prior knowledge, even if you are confident it is correct.
+2. Cite every factual claim with the bracketed number of the excerpt it came from, e.g. "The deadline is Friday [2]." Put the citation immediately after the claim.
+3. Read every excerpt in full before concluding that something is missing.
+4. If the excerpts genuinely do not contain the answer, say so plainly and cite nothing. Never invent a source, and never attach a citation to a statement you cannot point to in an excerpt.
+
+Excerpts:
+
+`;
+
+    // Group chunks by file, preserving citation numbers
+    const chunksByFile = new Map<string, { noteTitle: string; entries: { citationNum: number; content: string }[] }>();
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const citationNum = i + 1;
+      chunkMap.set(citationNum, chunk);
+
       const filePath = chunk.metadata.filePath;
       if (!chunksByFile.has(filePath)) {
-        chunksByFile.set(filePath, []);
+        chunksByFile.set(filePath, { noteTitle: chunk.metadata.noteTitle, entries: [] });
       }
-      chunksByFile.get(filePath)!.push(chunk);
+      chunksByFile.get(filePath)!.entries.push({ citationNum, content: chunk.content });
     }
 
-    // Format each file's chunks
-    for (const [filePath, fileChunks] of chunksByFile) {
-      const noteTitle = fileChunks[0].metadata.noteTitle;
+    for (const [, { noteTitle, entries }] of chunksByFile) {
       context += `### From: [[${noteTitle}]]\n`;
-      
-      // Sort chunks by index
-      fileChunks.sort((a, b) => a.metadata.chunkIndex - b.metadata.chunkIndex);
-      
-      for (const chunk of fileChunks) {
-        context += `${chunk.content}\n\n`;
+      for (const entry of entries) {
+        context += `[${entry.citationNum}]:\n${entry.content}\n\n`;
       }
-      
       context += "---\n\n";
     }
 
-    return context;
+    context += "Reminder: answer only from the excerpts above, cite each claim with its [number], and if the answer is not there, say so and cite nothing.\n";
+
+    return { formattedContext: context, chunkMap };
   }
 
   /**

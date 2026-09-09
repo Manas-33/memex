@@ -1,9 +1,23 @@
 import { App, TFile, normalizePath } from "obsidian";
 
+export interface CitationVerification {
+  id: number;
+  claim: string;
+  supported: boolean;
+  reason: string;
+  sourceChunk: {
+    noteTitle: string;
+    filePath: string;
+    chunkIndex: number;
+    content: string;
+  };
+}
+
 export interface Message {
   role: "system" | "user" | "assistant";
   content: string;
   timestamp: number;
+  citations?: CitationVerification[];
 }
 
 export interface Conversation {
@@ -14,10 +28,10 @@ export interface Conversation {
       systemPrompt?: string;
       temperature?: number;
       maxTokens?: number;
-      // RAG settings
       ragEnabled?: boolean;
       topK?: number;
       similarityThreshold?: number;
+      citationTrustMode?: "off" | "relaxed" | "strict";
   };
   createdAt: number;
   updatedAt: number;
