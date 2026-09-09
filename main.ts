@@ -33,6 +33,7 @@ interface MemexSettings {
   autoIndexOnChange: boolean;
   excludedFolders: string[];
   chromaDbPath: string;
+  citationTrustMode: "off" | "relaxed" | "strict";
 }
 
 const DEFAULT_SETTINGS: MemexSettings = {
@@ -65,6 +66,7 @@ const DEFAULT_SETTINGS: MemexSettings = {
   autoIndexOnChange: true,
   excludedFolders: ["Templates", ".obsidian"],
   chromaDbPath: ".obsidian/plugins/memex/chromadb",
+  citationTrustMode: "relaxed",
 };
 export default class MemexPlugin extends Plugin {
   settings: MemexSettings;
@@ -636,6 +638,19 @@ class MemexSettingTab extends PluginSettingTab {
                         value
                     );
                 }
+            }));
+
+    new Setting(containerEl)
+        .setName("Citation Trust Mode")
+        .setDesc("Off: no citations. Relaxed: cites and verifies but shows answer with warnings. Strict: refuses to answer if citations fail verification.")
+        .addDropdown(dropdown => dropdown
+            .addOption("off", "Off")
+            .addOption("relaxed", "Relaxed")
+            .addOption("strict", "Strict")
+            .setValue(this.plugin.settings.citationTrustMode)
+            .onChange(async (value) => {
+                this.plugin.settings.citationTrustMode = value as "off" | "relaxed" | "strict";
+                await this.plugin.saveSettings();
             }));
 
     new Setting(containerEl)
