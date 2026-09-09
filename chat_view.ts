@@ -13,7 +13,9 @@ import {
   App,
 } from "obsidian";
 import { LLMService } from "./llm_service";
-import { ConversationManager, Conversation, Message } from "./conversation_manager";
+import { ConversationManager, Conversation, Message, CitationVerification } from "./conversation_manager";
+import { RAGContext } from "./rag_service";
+import { SearchResult } from "./vector_store";
 // @ts-ignore
 import html2pdf from "html2pdf.js";
 
@@ -612,6 +614,7 @@ export class ChatView extends ItemView {
         ];
 
         // Add RAG context if enabled and available
+        let ragContext: RAGContext | null = null;
         if (this.ragService && this.settings.ragEnabled) {
           try {
             const lastUserMessage = this.currentConversation!.messages
@@ -621,11 +624,9 @@ export class ChatView extends ItemView {
             if (lastUserMessage) {
               let ragQuery = lastUserMessage.content;
 
-              // Rewrite follow-up queries using LLM when there's conversation history
               const allMessages = this.currentConversation!.messages;
               if (allMessages.length > 1) {
                 try {
-                  // Take the last 3 turns (up to 6 messages) for context, excluding the current user message
                   const recentHistory = allMessages.slice(0, -1).slice(-6);
                   const historyText = recentHistory
                     .map(m => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
@@ -650,30 +651,29 @@ export class ChatView extends ItemView {
                   console.log(`RAG: Rewrote query: "${lastUserMessage.content}" → "${ragQuery}"`);
                 } catch (rewriteError) {
                   console.error("Query rewrite failed, using original query:", rewriteError);
-                  // Fall back to original query
                 }
               }
 
               const topK = this.currentConversation!.config?.topK ?? this.settings.topK;
               const similarityThreshold = this.currentConversation!.config?.similarityThreshold ?? this.settings.similarityThreshold;
               
-              const ragContext = await this.ragService.retrieveContext(
+              ragContext = await this.ragService.retrieveContext(
                 ragQuery,
                 topK,
                 similarityThreshold
               );
 
-              if (ragContext.formattedContext) {
+              if (ragContext && ragContext.formattedContext) {
                 contextMessages.push({
                   role: "system",
                   content: ragContext.formattedContext
                 });
+
                 console.log(`RAG: Retrieved ${ragContext.retrievedChunks.length} relevant chunks`);
               }
             }
           } catch (error) {
             console.error("RAG retrieval error:", error);
-            // Continue without RAG context if there's an error
           }
         }
 
@@ -738,11 +738,82 @@ export class ChatView extends ItemView {
           }
         }
 
-        // Save the completed message
         assistantMsg.content = fullContent;
+
+        const trustMode = this.currentConversation!.config?.citationTrustMode ?? this.settings.citationTrustMode;
+
+        if (trustMode !== "off" && ragContext?.chunkMap && ragContext.chunkMap.size > 0) {
+          // Build baseline sources from all retrieved chunks
+          const allChunkIds = [...ragContext.chunkMap.keys()];
+          assistantMsg.citations = allChunkIds.map(id => {
+            const chunk = ragContext!.chunkMap.get(id)!;
+            return {
+              id,
+              claim: "",
+              supported: true,
+              reason: "",
+              sourceChunk: {
+                noteTitle: chunk.metadata.noteTitle,
+                filePath: chunk.metadata.filePath,
+                chunkIndex: chunk.metadata.chunkIndex,
+                content: chunk.content,
+              }
+            } as CitationVerification;
+          });
+
+          // Post-hoc attribution: check which sources support the answer
+          const verifyIndicator = this.messagesContainer.createEl("div", { cls: "verify-indicator" });
+          verifyIndicator.innerText = "Checking sources...";
+          verifyIndicator.style.opacity = "0.7";
+          verifyIndicator.style.fontStyle = "italic";
+          verifyIndicator.style.marginBottom = "10px";
+          verifyIndicator.style.padding = "10px";
+          this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+
+          try {
+            const attribution = await this.attributeSources(fullContent, ragContext.chunkMap);
+            if (attribution.length > 0) {
+              const attrMap = new Map(attribution.map(a => [a.id, a]));
+              assistantMsg.citations = assistantMsg.citations!.map(c =>
+                attrMap.has(c.id) ? attrMap.get(c.id)! : c
+              );
+
+              if (trustMode === "strict") {
+                const usedSources = attribution.filter(a => a.reason !== "");
+                const unsupported = usedSources.filter(a => !a.supported);
+                if (unsupported.length > 0) {
+                  fullContent = "I cannot provide a verified answer. The following claims could not be confirmed by sources:\n\n"
+                    + unsupported.map(c => `- ${c.claim}: ${c.reason}`).join("\n");
+                  assistantMsg.content = fullContent;
+
+                  if (contentEl) {
+                    contentEl.empty();
+                    await MarkdownRenderer.renderMarkdown(fullContent, contentEl, "", this.component);
+                  }
+                }
+              }
+            }
+          } catch (attrError) {
+            console.error("Source attribution failed:", attrError);
+          } finally {
+            verifyIndicator.remove();
+          }
+
+          // Style any [N] markers the model produced as badges
+          if (contentEl) {
+            const hasInlineCitations = /\[\d+\]/.test(fullContent);
+            if (hasInlineCitations) {
+              this.renderCitationBadges(contentEl, assistantMsg.citations!);
+            }
+          }
+
+          // Always show the sources panel
+          if (contentEl) {
+            this.renderCitationsPanel(contentEl.parentElement!, assistantMsg.citations!);
+          }
+        }
+
         await this.conversationManager.saveConversation(this.currentConversation!);
-        
-        // Refresh sidebar to update timestamp sorting
         this.renderSidebar();
 
       } catch (error: any) {
@@ -894,6 +965,11 @@ export class ChatView extends ItemView {
     
     if (message.role === "assistant" || message.role === "system") {
         MarkdownRenderer.renderMarkdown(message.content, content, "", this.component);
+
+        if (message.citations && message.citations.length > 0) {
+          this.renderCitationBadges(content, message.citations);
+          this.renderCitationsPanel(msgDiv, message.citations);
+        }
     } else {
         content.innerText = message.content;
     }
@@ -1000,6 +1076,357 @@ export class ChatView extends ItemView {
       indicator.style.padding = "10px";
       this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
       return indicator;
+  }
+
+  async attributeSources(
+    answer: string,
+    chunkMap: Map<number, SearchResult>
+  ): Promise<CitationVerification[]> {
+    let passagesText = "";
+    for (const [id, chunk] of chunkMap) {
+      passagesText += `[${id}] (From: ${chunk.metadata.noteTitle})\n${chunk.content}\n\n`;
+    }
+
+    const messages = [
+      {
+        role: "system",
+        content: `You are a source attribution checker. Given an answer and numbered source passages, determine which passages were used to produce the answer.
+
+For each source passage, check if the answer contains information that came from that passage. Mark it as "used": true if the passage supports any part of the answer, or "used": false if the passage was not relevant to the answer.
+
+Return ONLY valid JSON in this exact format, no other text:
+{"sources": [{"id": 1, "used": true, "claim": "what part of the answer it supports", "supported": true, "reason": "brief explanation"}]}
+
+For unused sources, set claim to "" and reason to "".
+If a source was used but the answer misrepresents it, set "used": true but "supported": false.`
+      },
+      {
+        role: "user",
+        content: `Answer:\n${answer}\n\nSource Passages:\n${passagesText}`
+      }
+    ];
+
+    const response = await this.llmService.completion(messages, {
+      temperature: 0,
+      max_tokens: 1500
+    });
+
+    try {
+      let cleaned = response.replace(/```(?:json)?\s*/gi, "").replace(/```\s*/g, "").trim();
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return [];
+      const parsed = JSON.parse(jsonMatch[0]);
+
+      const results: CitationVerification[] = [];
+      for (const s of (parsed.sources || [])) {
+        const id = Number(s.id);
+        const chunk = chunkMap.get(id);
+        if (!chunk) continue;
+
+        results.push({
+          id,
+          claim: s.claim || "",
+          supported: s.used ? !!s.supported : true,
+          reason: s.used ? (s.reason || "Supports the answer") : "",
+          sourceChunk: {
+            noteTitle: chunk.metadata.noteTitle,
+            filePath: chunk.metadata.filePath,
+            chunkIndex: chunk.metadata.chunkIndex,
+            content: chunk.content,
+          }
+        });
+      }
+      return results;
+    } catch (e) {
+      console.error("Failed to parse attribution response:", e, response);
+      return [];
+    }
+  }
+
+  async verifyCitations(
+    answer: string,
+    chunkMap: Map<number, SearchResult>
+  ): Promise<CitationVerification[]> {
+    const citationIds = [...new Set(
+      (answer.match(/\[(\d+)\]/g) || []).map(m => parseInt(m.slice(1, -1)))
+    )].filter(id => chunkMap.has(id));
+
+    if (citationIds.length === 0) return [];
+
+    let passagesText = "";
+    for (const id of citationIds) {
+      const chunk = chunkMap.get(id)!;
+      passagesText += `[${id}] (From: ${chunk.metadata.noteTitle})\n${chunk.content}\n\n`;
+    }
+
+    const verifyMessages = [
+      {
+        role: "system",
+        content: `You are a citation verifier. You will receive an answer that cites numbered source passages, and the source passages themselves. For each citation [N] used in the answer, determine whether the cited passage actually supports the claim being made.
+
+Return ONLY valid JSON in this exact format, no other text:
+{"citations": [{"id": 1, "claim": "the claim made", "supported": true, "reason": "why it is or isn't supported"}]}`
+      },
+      {
+        role: "user",
+        content: `Answer:\n${answer}\n\nSource Passages:\n${passagesText}\n\nVerify each citation used in the answer.`
+      }
+    ];
+
+    const response = await this.llmService.completion(verifyMessages, {
+      temperature: 0,
+      max_tokens: 1500
+    });
+
+    try {
+      let cleaned = response.replace(/```(?:json)?\s*/gi, "").replace(/```\s*/g, "").trim();
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return [];
+      const parsed = JSON.parse(jsonMatch[0]);
+
+      // Deduplicate by citation ID — a source is "supported" if ANY usage is supported
+      const byId = new Map<number, { supported: boolean; claims: string[]; reasons: string[] }>();
+      for (const c of (parsed.citations || [])) {
+        const id = Number(c.id);
+        if (!chunkMap.has(id)) continue;
+        const existing = byId.get(id);
+        if (existing) {
+          if (c.supported) existing.supported = true;
+          if (c.claim) existing.claims.push(c.claim);
+          if (c.reason) existing.reasons.push(c.reason);
+        } else {
+          byId.set(id, {
+            supported: !!c.supported,
+            claims: c.claim ? [c.claim] : [],
+            reasons: c.reason ? [c.reason] : [],
+          });
+        }
+      }
+
+      const results: CitationVerification[] = [];
+      for (const [id, entry] of byId) {
+        const chunk = chunkMap.get(id)!;
+        results.push({
+          id,
+          claim: entry.claims.join("; "),
+          supported: entry.supported,
+          reason: entry.supported
+            ? entry.reasons.find(r => r) || "Passage supports the claim"
+            : entry.reasons.filter(r => r).join("; "),
+          sourceChunk: {
+            noteTitle: chunk.metadata.noteTitle,
+            filePath: chunk.metadata.filePath,
+            chunkIndex: chunk.metadata.chunkIndex,
+            content: chunk.content,
+          }
+        });
+      }
+      return results;
+    } catch (e) {
+      console.error("Failed to parse verification response:", e, response);
+      return [];
+    }
+  }
+
+  renderCitationBadges(contentEl: HTMLElement, citations: CitationVerification[]) {
+    const verificationMap = new Map<number, CitationVerification>();
+    for (const c of citations) {
+      verificationMap.set(c.id, c);
+    }
+
+    const walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT);
+    const replacements: { node: Text; fragments: DocumentFragment }[] = [];
+
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode as Text;
+      const text = textNode.textContent || "";
+      if (!/\[\d+\]/.test(text)) continue;
+
+      const fragment = document.createDocumentFragment();
+      let lastIndex = 0;
+      const regex = /\[(\d+)\]/g;
+      let match: RegExpExecArray | null;
+
+      while ((match = regex.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+          fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+        }
+
+        const citationId = parseInt(match[1]);
+        const verification = verificationMap.get(citationId);
+
+        const badge = document.createElement("span");
+        badge.className = "memex-citation-badge";
+        badge.textContent = `[${citationId}]`;
+        badge.setAttribute("data-citation-id", String(citationId));
+        badge.style.cursor = "pointer";
+        badge.style.fontWeight = "bold";
+        badge.style.padding = "1px 4px";
+        badge.style.borderRadius = "3px";
+        badge.style.fontSize = "0.85em";
+        badge.style.position = "relative";
+
+        if (verification) {
+          if (verification.supported) {
+            badge.style.backgroundColor = "rgba(40, 167, 69, 0.2)";
+            badge.style.color = "var(--text-success, #28a745)";
+            badge.title = `Verified: ${verification.reason}`;
+          } else {
+            badge.style.backgroundColor = "rgba(220, 53, 69, 0.2)";
+            badge.style.color = "var(--text-error, #dc3545)";
+            badge.title = `Not supported: ${verification.reason}`;
+          }
+        } else {
+          badge.style.backgroundColor = "rgba(255, 193, 7, 0.2)";
+          badge.style.color = "var(--text-warning, #ffc107)";
+          badge.title = "Unverified citation";
+        }
+
+        badge.addEventListener("click", () => {
+          const panel = contentEl.parentElement?.querySelector(`.memex-citation-detail[data-citation-id="${citationId}"]`);
+          if (panel) {
+            panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            (panel as HTMLElement).style.outline = "2px solid var(--interactive-accent)";
+            setTimeout(() => { (panel as HTMLElement).style.outline = "none"; }, 1500);
+          }
+        });
+
+        fragment.appendChild(badge);
+        lastIndex = match.index + match[0].length;
+      }
+
+      if (lastIndex < text.length) {
+        fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+      }
+
+      replacements.push({ node: textNode, fragments: fragment });
+    }
+
+    for (const { node, fragments } of replacements) {
+      node.parentNode?.replaceChild(fragments, node);
+    }
+  }
+
+  renderCitationsPanel(msgDiv: HTMLElement, citations: CitationVerification[]) {
+    const existingPanel = msgDiv.querySelector(".memex-citations-panel");
+    if (existingPanel) existingPanel.remove();
+
+    if (citations.length === 0) return;
+
+    const panel = msgDiv.createEl("div", { cls: "memex-citations-panel" });
+    panel.style.marginTop = "10px";
+    panel.style.borderTop = "1px solid var(--background-modifier-border)";
+    panel.style.paddingTop = "8px";
+
+    const verifiedCitations = citations.filter(c => c.reason && c.reason !== "");
+    const verifiedCount = verifiedCitations.filter(c => c.supported).length;
+    const totalVerified = verifiedCitations.length;
+
+    const toggle = panel.createEl("div", { cls: "citations-toggle" });
+    toggle.style.cursor = "pointer";
+    toggle.style.fontSize = "0.85em";
+    toggle.style.fontWeight = "bold";
+    toggle.style.opacity = "0.8";
+    toggle.style.display = "flex";
+    toggle.style.alignItems = "center";
+    toggle.style.gap = "6px";
+    toggle.style.userSelect = "none";
+
+    const statusColor = totalVerified === 0
+      ? "var(--text-muted, #888)"
+      : verifiedCount === totalVerified
+        ? "var(--text-success, #28a745)"
+        : "var(--text-warning, #ffc107)";
+
+    const statusDot = toggle.createEl("span");
+    statusDot.style.width = "8px";
+    statusDot.style.height = "8px";
+    statusDot.style.borderRadius = "50%";
+    statusDot.style.backgroundColor = statusColor;
+    statusDot.style.display = "inline-block";
+
+    const labelText = totalVerified > 0
+      ? `Sources (${verifiedCount}/${totalVerified} verified)`
+      : `Sources (${citations.length})`;
+    toggle.createEl("span", { text: labelText });
+
+    const arrow = toggle.createEl("span", { text: " \u25BC" });
+    arrow.style.fontSize = "0.7em";
+    arrow.style.transition = "transform 0.2s ease";
+
+    const list = panel.createEl("div", { cls: "citations-list" });
+    list.style.display = "none";
+    list.style.marginTop = "8px";
+    list.style.display = "none";
+
+    let expanded = false;
+    toggle.addEventListener("click", () => {
+      expanded = !expanded;
+      list.style.display = expanded ? "block" : "none";
+      arrow.style.transform = expanded ? "rotate(180deg)" : "rotate(0deg)";
+    });
+
+    for (const citation of citations) {
+      const isVerified = citation.reason && citation.reason !== "";
+      const item = list.createEl("div", { cls: "memex-citation-detail" });
+      item.setAttribute("data-citation-id", String(citation.id));
+      item.style.padding = "8px";
+      item.style.marginBottom = "6px";
+      item.style.borderRadius = "4px";
+      item.style.fontSize = "0.85em";
+      item.style.lineHeight = "1.4";
+      item.style.borderLeft = !isVerified
+        ? "3px solid var(--text-muted, #888)"
+        : citation.supported
+          ? "3px solid var(--text-success, #28a745)"
+          : "3px solid var(--text-error, #dc3545)";
+      item.style.backgroundColor = "var(--background-primary)";
+
+      const header = item.createEl("div");
+      header.style.fontWeight = "bold";
+      header.style.marginBottom = "4px";
+      header.style.display = "flex";
+      header.style.justifyContent = "space-between";
+
+      header.createEl("span", {
+        text: `[${citation.id}] From: ${citation.sourceChunk.noteTitle}`
+      });
+
+      const statusBadge = header.createEl("span");
+      statusBadge.style.fontSize = "0.85em";
+      statusBadge.style.padding = "1px 6px";
+      statusBadge.style.borderRadius = "3px";
+
+      if (!isVerified) {
+        statusBadge.textContent = "Source";
+        statusBadge.style.backgroundColor = "rgba(136, 136, 136, 0.2)";
+        statusBadge.style.color = "var(--text-muted, #888)";
+      } else if (citation.supported) {
+        statusBadge.textContent = "Verified";
+        statusBadge.style.backgroundColor = "rgba(40, 167, 69, 0.2)";
+        statusBadge.style.color = "var(--text-success, #28a745)";
+      } else {
+        statusBadge.textContent = "Not Supported";
+        statusBadge.style.backgroundColor = "rgba(220, 53, 69, 0.2)";
+        statusBadge.style.color = "var(--text-error, #dc3545)";
+      }
+
+      const contentPreview = item.createEl("div");
+      contentPreview.style.opacity = "0.8";
+      contentPreview.style.whiteSpace = "pre-wrap";
+      const previewText = citation.sourceChunk.content.length > 200
+        ? citation.sourceChunk.content.substring(0, 200) + "..."
+        : citation.sourceChunk.content;
+      contentPreview.textContent = previewText;
+
+      if (!citation.supported) {
+        const reasonEl = item.createEl("div");
+        reasonEl.style.marginTop = "4px";
+        reasonEl.style.fontStyle = "italic";
+        reasonEl.style.color = "var(--text-error, #dc3545)";
+        reasonEl.textContent = citation.reason;
+      }
+    }
   }
 
   async onClose() {
@@ -1132,11 +1559,11 @@ export class ConversationSettingsModal extends Modal {
     this.settings = settings;
     this.onSave = onSave;
     
-    // Initialize temp config with existing values or defaults
     this.tempConfig = {
         systemPrompt: conversation.config?.systemPrompt || settings.personas[0]?.prompt || "",
         temperature: conversation.config?.temperature ?? settings.defaultTemperature,
-        maxTokens: conversation.config?.maxTokens ?? settings.defaultMaxTokens
+        maxTokens: conversation.config?.maxTokens ?? settings.defaultMaxTokens,
+        citationTrustMode: conversation.config?.citationTrustMode ?? settings.citationTrustMode ?? "relaxed"
     };
   }
 
@@ -1198,6 +1625,19 @@ export class ConversationSettingsModal extends Modal {
                 if (!isNaN(num)) {
                     this.tempConfig.maxTokens = num;
                 }
+            }));
+
+    // Citation Trust Mode
+    new Setting(contentEl)
+        .setName("Citation Trust Mode")
+        .setDesc("Controls citation verification for this chat")
+        .addDropdown(dropdown => dropdown
+            .addOption("off", "Off")
+            .addOption("relaxed", "Relaxed")
+            .addOption("strict", "Strict")
+            .setValue(this.tempConfig.citationTrustMode)
+            .onChange((value) => {
+                this.tempConfig.citationTrustMode = value;
             }));
 
     new Setting(contentEl).addButton((btn) =>
