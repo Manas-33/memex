@@ -1,6 +1,11 @@
 # Dependencies
 node_modules/
 
+# Local working files (never committed)
+demo_vault/
+data.json
+*.local.md
+
 # Build outputs
 main.js
 *.js.map
