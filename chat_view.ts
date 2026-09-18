@@ -68,51 +68,27 @@ export class ChatView extends ItemView {
     this.containerEl.addClass("memex-chat-view");
 
     // Main Layout: Sidebar + Chat Area
-    const mainLayout = this.containerEl.createEl("div", {
+    const mainLayout = this.containerEl.createDiv({
       cls: "memex-main-layout",
     });
-    mainLayout.style.display = "flex";
-    mainLayout.style.height = "100%";
 
     // Sidebar
-    this.sidebarContainer = mainLayout.createEl("div", {
+    this.sidebarContainer = mainLayout.createDiv({
       cls: "memex-sidebar",
     });
-    this.sidebarContainer.style.width = "250px";
-    this.sidebarContainer.style.minWidth = "150px";
-    this.sidebarContainer.style.maxWidth = "500px";
-    this.sidebarContainer.style.borderRight = "1px solid var(--background-modifier-border)";
-    this.sidebarContainer.style.display = "flex";
-    this.sidebarContainer.style.flexDirection = "column";
-    this.sidebarContainer.style.backgroundColor = "var(--background-secondary)";
-    this.sidebarContainer.style.transition = "width 0.3s ease, min-width 0.3s ease, padding 0.3s ease, opacity 0.3s ease";
-    this.sidebarContainer.style.overflow = "hidden";
 
     // Resizer
-    const resizer = mainLayout.createEl("div", { cls: "memex-resizer" });
-    resizer.style.width = "5px";
-    resizer.style.cursor = "col-resize";
-    resizer.style.backgroundColor = "transparent";
-    resizer.style.height = "100%";
-    resizer.style.flexShrink = "0";
-    resizer.style.transition = "background-color 0.2s ease";
-    
-    resizer.addEventListener("mouseenter", () => {
-        resizer.style.backgroundColor = "var(--interactive-accent)";
-    });
-    resizer.addEventListener("mouseleave", () => {
-        if (!isResizing) resizer.style.backgroundColor = "transparent";
-    });
-
+    const resizer = mainLayout.createDiv({ cls: "memex-resizer" });
     let isResizing = false;
 
-    resizer.addEventListener("mousedown", (e) => {
+    resizer.addEventListener("mousedown", () => {
       isResizing = true;
-      document.body.style.cursor = "col-resize";
-      resizer.style.backgroundColor = "var(--interactive-accent)";
+      document.body.addClass("memex-is-resizing");
+      resizer.addClass("is-resizing");
     });
 
-    document.addEventListener("mousemove", (e) => {
+    // Registered on the view so they're removed when it closes
+    this.registerDomEvent(document, "mousemove", (e) => {
       if (!isResizing) return;
       const newWidth = e.clientX - this.containerEl.getBoundingClientRect().left;
       if (newWidth > 150 && newWidth < 500) {
@@ -120,64 +96,37 @@ export class ChatView extends ItemView {
       }
     });
 
-    document.addEventListener("mouseup", () => {
+    this.registerDomEvent(document, "mouseup", () => {
       if (isResizing) {
         isResizing = false;
-        document.body.style.cursor = "default";
-        resizer.style.backgroundColor = "transparent";
+        document.body.removeClass("memex-is-resizing");
+        resizer.removeClass("is-resizing");
       }
     });
 
     // Chat Area
-    const chatArea = mainLayout.createEl("div", {
+    const chatArea = mainLayout.createDiv({
       cls: "memex-chat-area",
     });
-    chatArea.style.flex = "1";
-    chatArea.style.display = "flex";
-    chatArea.style.flexDirection = "column";
-    chatArea.style.height = "100%";
-    chatArea.style.position = "relative"; // For absolute positioning of toggle button
 
     // Toggle Button (Floating)
-    const toggleBtn = chatArea.createEl("button", { cls: "sidebar-toggle-btn" });
+    const toggleBtn = chatArea.createEl("button", { cls: "memex-sidebar-toggle" });
     setIcon(toggleBtn, "panel-left");
-    toggleBtn.style.position = "absolute";
-    toggleBtn.style.top = "10px";
-    toggleBtn.style.left = "10px";
-    toggleBtn.style.zIndex = "10";
-    toggleBtn.style.background = "var(--background-primary)";
-    toggleBtn.style.border = "1px solid var(--background-modifier-border)";
-    toggleBtn.style.borderRadius = "4px";
-    toggleBtn.style.padding = "4px";
-    toggleBtn.style.cursor = "pointer";
-    toggleBtn.style.opacity = "0.6";
-    
-    toggleBtn.addEventListener("mouseenter", () => {
-        toggleBtn.style.opacity = "1";
-    });
-    toggleBtn.addEventListener("mouseleave", () => {
-        toggleBtn.style.opacity = "0.6";
-    });
 
     let isCollapsed = false;
-    let lastWidth = "250px";
+    let draggedWidth = "";
 
     toggleBtn.onClickEvent(() => {
         isCollapsed = !isCollapsed;
         if (isCollapsed) {
-            lastWidth = this.sidebarContainer.style.width;
-            this.sidebarContainer.style.width = "0px";
-            this.sidebarContainer.style.minWidth = "0px";
-            this.sidebarContainer.style.padding = "0px";
-            this.sidebarContainer.style.opacity = "0";
-            resizer.style.display = "none";
-        } else {
-            this.sidebarContainer.style.width = lastWidth;
-            this.sidebarContainer.style.minWidth = "150px";
-            this.sidebarContainer.style.padding = ""; // reset
-            this.sidebarContainer.style.opacity = "1";
-            resizer.style.display = "block";
+            // A dragged width is set inline and would override the collapsed class
+            draggedWidth = this.sidebarContainer.style.width;
+            this.sidebarContainer.style.removeProperty("width");
+        } else if (draggedWidth) {
+            this.sidebarContainer.style.width = draggedWidth;
         }
+        this.sidebarContainer.toggleClass("is-collapsed", isCollapsed);
+        resizer.toggleClass("is-hidden", isCollapsed);
     });
 
     await this.renderSidebar();
@@ -196,17 +145,10 @@ export class ChatView extends ItemView {
     this.sidebarContainer.empty();
 
     // Header with New Chat button
-    const header = this.sidebarContainer.createEl("div", {
-      cls: "sidebar-header",
+    const header = this.sidebarContainer.createDiv({
+      cls: "memex-sidebar-header",
     });
-    header.style.padding = "10px";
-    header.style.borderBottom = "1px solid var(--background-modifier-border)";
-    header.style.display = "flex";
-    header.style.justifyContent = "space-between";
-    header.style.alignItems = "center";
-
-    const title = header.createEl("h3", { text: "Chats" });
-    title.style.margin = "0";
+    header.createEl("h3", { text: "Chats", cls: "memex-sidebar-title" });
 
     const newChatBtn = new ButtonComponent(header);
     newChatBtn.setIcon("plus");
@@ -216,54 +158,25 @@ export class ChatView extends ItemView {
     });
 
     // Conversation List
-    const listContainer = this.sidebarContainer.createEl("div", {
-      cls: "conversation-list",
+    const listContainer = this.sidebarContainer.createDiv({
+      cls: "memex-conversation-list",
     });
-    listContainer.style.flex = "1";
-    listContainer.style.overflowY = "auto";
-    listContainer.style.padding = "10px";
 
     const conversations = await this.conversationManager.getConversations();
 
     for (const conv of conversations) {
-      const item = listContainer.createEl("div", {
-        cls: "conversation-item",
+      const item = listContainer.createDiv({
+        cls: "memex-conversation-item",
       });
-      item.style.padding = "8px";
-      item.style.borderRadius = "4px";
-      item.style.cursor = "pointer";
-      item.style.marginBottom = "5px";
-      item.style.display = "flex";
-      item.style.justifyContent = "space-between";
-      item.style.alignItems = "center";
+      item.toggleClass("is-active", this.currentConversation?.id === conv.id);
 
-      if (this.currentConversation && this.currentConversation.id === conv.id) {
-        item.style.backgroundColor = "var(--background-modifier-active-hover)";
-      } else {
-        item.addEventListener("mouseenter", () => {
-          item.style.backgroundColor = "var(--background-modifier-hover)";
-        });
-        item.addEventListener("mouseleave", () => {
-          if (!this.currentConversation || this.currentConversation.id !== conv.id) {
-            item.style.backgroundColor = "transparent";
-          }
-        });
-      }
-
-      const titleSpan = item.createEl("span", { text: conv.title });
-      titleSpan.style.whiteSpace = "nowrap";
-      titleSpan.style.overflow = "hidden";
-      titleSpan.style.textOverflow = "ellipsis";
-      titleSpan.style.flex = "1";
-      titleSpan.style.marginRight = "5px";
+      const titleSpan = item.createSpan({ text: conv.title, cls: "memex-conversation-title" });
 
       titleSpan.addEventListener("click", () => void this.loadConversation(conv.id));
 
       // Context Menu for Rename/Delete
-      const menuBtn = item.createEl("div", { cls: "conversation-menu-btn" });
+      const menuBtn = item.createDiv({ cls: "memex-conversation-menu" });
       setIcon(menuBtn, "more-vertical");
-      menuBtn.style.opacity = "0.5";
-      menuBtn.style.fontSize = "12px";
       
       menuBtn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -326,147 +239,29 @@ export class ChatView extends ItemView {
       // Create a temporary container for rendering
       // We use a visible overlay to ensure html2canvas captures it correctly.
       // This also acts as a "loading" indicator of sorts.
-      const tempContainer = document.body.createEl("div");
-      tempContainer.style.position = "fixed";
-      tempContainer.style.left = "0";
-      tempContainer.style.top = "0";
-      tempContainer.style.width = "100%";
-      tempContainer.style.height = "100%";
-      tempContainer.style.zIndex = "9999";
-      tempContainer.style.backgroundColor = "white";
-      tempContainer.style.overflowY = "auto"; // Allow scrolling if needed for debugging, though html2canvas captures full height
-      tempContainer.style.padding = "40px";
-      
-      // Content Container (centered A4-ish look)
-      const contentContainer = tempContainer.createEl("div");
-      contentContainer.style.width = "700px"; // Reduced from 800px to prevent overflow
-      contentContainer.style.maxWidth = "100%";
-      contentContainer.style.margin = "0 auto";
-      contentContainer.style.color = "black";
-      contentContainer.style.backgroundColor = "white";
-      contentContainer.style.fontFamily = "Arial, sans-serif";
-      contentContainer.style.fontSize = "14px";
-      contentContainer.style.lineHeight = "1.6";
-      contentContainer.style.padding = "20px";
-      contentContainer.style.boxSizing = "border-box";
-      contentContainer.style.wordWrap = "break-word";
-      contentContainer.style.overflowWrap = "break-word";
-      
-      // Header
-      const h1 = contentContainer.createEl("h1", { text: conversation.title });
-      h1.style.fontSize = "24px";
-      h1.style.marginBottom = "10px";
-      h1.style.color = "black";
-      h1.style.fontWeight = "bold";
-      
-      const exportDate = contentContainer.createEl("p", { text: `Exported on ${new Date().toLocaleDateString()}` });
-      exportDate.style.fontSize = "12px";
-      exportDate.style.color = "#666";
-      exportDate.style.marginBottom = "20px";
-      
-      const hr = contentContainer.createEl("hr");
-      hr.style.border = "none";
-      hr.style.borderTop = "2px solid #ddd";
-      hr.style.marginBottom = "20px";
+      const tempContainer = document.body.createDiv({ cls: "memex-pdf-export" });
 
-      // Messages
+      // Content Container (centered A4-ish look)
+      const contentContainer = tempContainer.createDiv({ cls: "memex-pdf-page" });
+
+      // Header
+      contentContainer.createEl("h1", { text: conversation.title, cls: "memex-pdf-title" });
+      contentContainer.createEl("p", { text: `Exported on ${new Date().toLocaleDateString()}`, cls: "memex-pdf-date" });
+      contentContainer.createEl("hr", { cls: "memex-pdf-rule" });
+
+      // Messages; the rendered Markdown inside is styled by .memex-pdf-message-body in styles.css
       for (const msg of conversation.messages) {
-          const msgDiv = contentContainer.createEl("div");
-          msgDiv.style.marginBottom = "25px";
-          msgDiv.style.paddingBottom = "15px";
-          msgDiv.style.borderBottom = "1px solid #e0e0e0";
-          msgDiv.style.pageBreakInside = "avoid"; // Try to keep messages together
+          const msgDiv = contentContainer.createDiv({ cls: "memex-pdf-message" });
 
           const role = msg.role === "user" ? "You" : "Journal";
           const time = new Date(msg.timestamp).toLocaleTimeString();
-          
-          const header = msgDiv.createEl("div");
-          header.style.fontWeight = "bold";
-          header.style.marginBottom = "8px";
-          header.style.fontSize = "13px";
-          header.style.color = msg.role === "user" ? "#2e86de" : "#10ac84";
-          header.innerText = `${role} (${time})`;
-
-          const content = msgDiv.createEl("div");
-          content.style.color = "black";
-          content.style.fontSize = "14px";
-          content.style.lineHeight = "1.6";
-          
-          // Use MarkdownRenderer
-          await MarkdownRenderer.render(this.app, msg.content, content, "", this.component);
-          
-          // Apply comprehensive styling to all rendered elements
-          const allElements = content.querySelectorAll("*");
-          allElements.forEach((el: HTMLElement) => {
-              el.style.color = "black";
-              el.style.fontFamily = "Arial, sans-serif";
-              
-              // Style specific elements
-              if (el.tagName === "P") {
-                  el.style.marginBottom = "10px";
-                  el.style.marginTop = "0";
-                  el.style.pageBreakInside = "avoid";
-              } else if (el.tagName === "H1") {
-                  el.style.fontSize = "20px";
-                  el.style.marginTop = "15px";
-                  el.style.marginBottom = "10px";
-                  el.style.fontWeight = "bold";
-                  el.style.pageBreakInside = "avoid";
-                  el.style.pageBreakAfter = "avoid";
-              } else if (el.tagName === "H2") {
-                  el.style.fontSize = "18px";
-                  el.style.marginTop = "12px";
-                  el.style.marginBottom = "8px";
-                  el.style.fontWeight = "bold";
-                  el.style.pageBreakInside = "avoid";
-                  el.style.pageBreakAfter = "avoid";
-              } else if (el.tagName === "H3") {
-                  el.style.fontSize = "16px";
-                  el.style.marginTop = "10px";
-                  el.style.marginBottom = "6px";
-                  el.style.fontWeight = "bold";
-                  el.style.pageBreakInside = "avoid";
-                  el.style.pageBreakAfter = "avoid";
-              } else if (el.tagName === "UL" || el.tagName === "OL") {
-                  el.style.marginLeft = "20px";
-                  el.style.marginBottom = "10px";
-                  el.style.pageBreakInside = "avoid";
-              } else if (el.tagName === "LI") {
-                  el.style.marginBottom = "5px";
-                  el.style.pageBreakInside = "avoid";
-              } else if (el.tagName === "CODE") {
-                  el.style.backgroundColor = "#f5f5f5";
-                  el.style.padding = "2px 4px";
-                  el.style.borderRadius = "3px";
-                  el.style.fontFamily = "Consolas, Monaco, monospace";
-                  el.style.fontSize = "13px";
-                  el.style.wordWrap = "break-word";
-                  el.style.overflowWrap = "break-word";
-              } else if (el.tagName === "PRE") {
-                  el.style.backgroundColor = "#f5f5f5";
-                  el.style.padding = "10px";
-                  el.style.borderRadius = "5px";
-                  el.style.overflow = "hidden";
-                  el.style.marginBottom = "10px";
-                  el.style.whiteSpace = "pre-wrap";
-                  el.style.wordWrap = "break-word";
-                  el.style.maxWidth = "100%";
-                  el.style.pageBreakInside = "avoid";
-              } else if (el.tagName === "BLOCKQUOTE") {
-                  el.style.borderLeft = "4px solid #ddd";
-                  el.style.paddingLeft = "15px";
-                  el.style.marginLeft = "0";
-                  el.style.color = "#666";
-                  el.style.pageBreakInside = "avoid";
-              } else if (el.tagName === "A") {
-                  el.style.color = "#2e86de";
-                  el.style.textDecoration = "underline";
-              } else if (el.tagName === "IMG") {
-                  el.style.maxWidth = "100%";
-                  el.style.height = "auto";
-                  el.style.pageBreakInside = "avoid";
-              }
+          msgDiv.createDiv({
+            cls: ["memex-pdf-message-header", msg.role === "user" ? "is-user" : "is-assistant"],
+            text: `${role} (${time})`,
           });
+
+          const content = msgDiv.createDiv({ cls: "memex-pdf-message-body" });
+          await MarkdownRenderer.render(this.app, msg.content, content, "", this.component);
       }
 
     // Wait a moment for images/rendering to settle
@@ -518,30 +313,18 @@ export class ChatView extends ItemView {
 
   renderChatArea(container: HTMLElement) {
     // Messages Area
-    this.messagesContainer = container.createEl("div", { cls: "chat-messages" });
-    this.messagesContainer.style.flex = "1";
-    this.messagesContainer.style.overflowY = "auto";
-    this.messagesContainer.style.padding = "20px";
+    this.messagesContainer = container.createDiv({ cls: "memex-messages" });
 
     // Input Area
-    const inputContainer = container.createEl("div", {
-      cls: "chat-input-container",
+    const inputContainer = container.createDiv({
+      cls: "memex-input-area",
     });
-    inputContainer.style.padding = "20px";
-    inputContainer.style.borderTop = "1px solid var(--background-modifier-border)";
-    inputContainer.style.display = "flex";
-    inputContainer.style.flexDirection = "column";
 
     const inputEl = new TextAreaComponent(inputContainer);
     inputEl.setPlaceholder("Ask your journal a question...");
-    inputEl.inputEl.style.width = "100%";
-    inputEl.inputEl.style.minHeight = "60px";
-    inputEl.inputEl.style.resize = "vertical";
+    inputEl.inputEl.addClass("memex-input");
 
-    const buttonContainer = inputContainer.createEl("div");
-    buttonContainer.style.display = "flex";
-    buttonContainer.style.justifyContent = "space-between"; // Changed to space-between
-    buttonContainer.style.marginTop = "10px";
+    const buttonContainer = inputContainer.createDiv({ cls: "memex-input-buttons" });
 
     // Settings Button
     const settingsBtn = new ButtonComponent(buttonContainer);
@@ -719,10 +502,7 @@ export class ChatView extends ItemView {
         // Keep something in the bubble while we wait: reasoning models can go
         // several seconds before emitting their first delta.
         if (contentEl) {
-          const pending = contentEl.createEl("span");
-          pending.innerText = "Journal is thinking...";
-          pending.style.opacity = "0.7";
-          pending.style.fontStyle = "italic";
+          contentEl.createSpan({ text: "Journal is thinking...", cls: "memex-pending" });
         }
 
         const renderStream = async () => {
@@ -788,12 +568,7 @@ export class ChatView extends ItemView {
           });
 
           // Post-hoc attribution: check which sources support the answer
-          const verifyIndicator = this.messagesContainer.createEl("div", { cls: "verify-indicator" });
-          verifyIndicator.innerText = "Checking sources...";
-          verifyIndicator.style.opacity = "0.7";
-          verifyIndicator.style.fontStyle = "italic";
-          verifyIndicator.style.marginBottom = "10px";
-          verifyIndicator.style.padding = "10px";
+          const verifyIndicator = this.messagesContainer.createDiv({ cls: "verify-indicator", text: "Checking sources..." });
           this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
 
           const replaceAnswer = async (text: string) => {
@@ -889,55 +664,24 @@ export class ChatView extends ItemView {
   }
 
   appendMessage(message: Message) {
-    const msgDiv = this.messagesContainer.createEl("div", { cls: "chat-message" });
+    const msgDiv = this.messagesContainer.createDiv({ cls: "chat-message" });
     msgDiv.addClass(`message-${message.role}`);
-    msgDiv.style.marginBottom = "15px";
-    msgDiv.style.padding = "10px";
-    msgDiv.style.borderRadius = "8px";
-    if (message.role === "user") {
-        msgDiv.style.maxWidth = "85%";
-        msgDiv.style.alignSelf = "flex-end";
-        msgDiv.style.backgroundColor = "var(--interactive-accent)";
-        msgDiv.style.color = "var(--text-on-accent)";
-        msgDiv.style.marginLeft = "auto";
-    } else {
-        msgDiv.style.maxWidth = "100%";
-        msgDiv.style.alignSelf = "flex-start";
-        msgDiv.style.backgroundColor = "var(--background-secondary)";
-        msgDiv.style.marginRight = "auto";
-    }
 
-    const header = msgDiv.createEl("div", { cls: "message-header" });
-    header.style.fontSize = "0.8em";
-    header.style.opacity = "0.7";
-    header.style.marginBottom = "5px";
-    header.style.display = "flex";
-    header.style.justifyContent = "space-between";
-    header.style.alignItems = "center";
+    const header = msgDiv.createDiv({ cls: "message-header" });
     
-    header.createEl("span", { text: message.role === "user" ? "You" : "Journal" });
+    header.createSpan({ text: message.role === "user" ? "You" : "Journal" });
 
     // Timestamp
     const date = new Date(message.timestamp);
     const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const timestampSpan = header.createEl("span", { text: timeStr });
-    timestampSpan.style.fontSize = "0.9em";
-    timestampSpan.style.marginLeft = "10px";
-    timestampSpan.style.opacity = "0.8";
+    header.createSpan({ text: timeStr, cls: "message-timestamp" });
 
-    const actionsDiv = header.createEl("div", { cls: "message-actions" });
-    actionsDiv.style.display = "flex";
-    actionsDiv.style.gap = "5px";
+    const actionsDiv = header.createDiv({ cls: "message-actions" });
 
     // Menu Button
-    const menuBtn = actionsDiv.createEl("div", { cls: "message-action-btn" });
+    const menuBtn = actionsDiv.createDiv({ cls: "message-action-btn" });
     setIcon(menuBtn, "more-horizontal");
-    menuBtn.style.cursor = "pointer";
-    menuBtn.style.opacity = "0.6";
     menuBtn.title = "Message actions";
-    
-    menuBtn.addEventListener("mouseenter", () => menuBtn.style.opacity = "1");
-    menuBtn.addEventListener("mouseleave", () => menuBtn.style.opacity = "0.6");
 
     menuBtn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -1002,7 +746,7 @@ export class ChatView extends ItemView {
         menu.showAtMouseEvent(e);
     });
 
-    const content = msgDiv.createEl("div", { cls: "message-content" });
+    const content = msgDiv.createDiv({ cls: "message-content" });
     
     if (message.role === "assistant" || message.role === "system") {
         void this.renderAssistantMessage(message, msgDiv, content);
@@ -1029,14 +773,9 @@ export class ChatView extends ItemView {
       contentEl.empty();
       const editArea = new TextAreaComponent(contentEl);
       editArea.setValue(message.content);
-      editArea.inputEl.style.width = "100%";
-      editArea.inputEl.style.minHeight = "60px";
-      
-      const btnContainer = contentEl.createEl("div");
-      btnContainer.style.display = "flex";
-      btnContainer.style.justifyContent = "flex-end";
-      btnContainer.style.gap = "5px";
-      btnContainer.style.marginTop = "5px";
+      editArea.inputEl.addClass("memex-edit-input");
+
+      const btnContainer = contentEl.createDiv({ cls: "memex-edit-buttons" });
 
       const saveBtn = new ButtonComponent(btnContainer);
       saveBtn.setButtonText("Save & submit");
@@ -1116,12 +855,7 @@ export class ChatView extends ItemView {
   }
 
   showTypingIndicator() {
-      const indicator = this.messagesContainer.createEl("div", { cls: "typing-indicator" });
-      indicator.innerText = "Journal is thinking...";
-      indicator.style.opacity = "0.7";
-      indicator.style.fontStyle = "italic";
-      indicator.style.marginBottom = "10px";
-      indicator.style.padding = "10px";
+      const indicator = this.messagesContainer.createDiv({ cls: "typing-indicator", text: "Journal is thinking..." });
       this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
       return indicator;
   }
@@ -1209,67 +943,50 @@ If a source was used but the answer misrepresents it, set "used": true but "supp
       const text = textNode.textContent || "";
       if (!/\[\d+\]/.test(text)) continue;
 
-      const fragment = document.createDocumentFragment();
+      const fragment = createFragment();
       let lastIndex = 0;
       const regex = /\[(\d+)\]/g;
       let match: RegExpExecArray | null;
 
       while ((match = regex.exec(text)) !== null) {
         if (match.index > lastIndex) {
-          fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+          fragment.appendText(text.slice(lastIndex, match.index));
         }
 
         const citationId = parseInt(match[1]);
         const verification = verificationMap.get(citationId);
+        const [status, title]: [string, string] = !verification
+          ? ["is-unverified", "Unverified citation"]
+          : verification.supported
+            ? ["is-supported", `Verified: ${verification.reason}`]
+            : ["is-unsupported", `Not supported: ${verification.reason}`];
 
-        const badge = document.createElement("span");
-        badge.className = "memex-citation-badge";
-        badge.textContent = `[${citationId}]`;
-        badge.setAttribute("data-citation-id", String(citationId));
-        badge.style.cursor = "pointer";
-        badge.style.fontWeight = "bold";
-        badge.style.padding = "1px 4px";
-        badge.style.borderRadius = "3px";
-        badge.style.fontSize = "0.85em";
-        badge.style.position = "relative";
-
-        if (verification) {
-          if (verification.supported) {
-            badge.style.backgroundColor = "rgba(40, 167, 69, 0.2)";
-            badge.style.color = "var(--text-success, #28a745)";
-            badge.title = `Verified: ${verification.reason}`;
-          } else {
-            badge.style.backgroundColor = "rgba(220, 53, 69, 0.2)";
-            badge.style.color = "var(--text-error, #dc3545)";
-            badge.title = `Not supported: ${verification.reason}`;
-          }
-        } else {
-          badge.style.backgroundColor = "rgba(255, 193, 7, 0.2)";
-          badge.style.color = "var(--text-warning, #ffc107)";
-          badge.title = "Unverified citation";
-        }
+        const badge = fragment.createSpan({
+          cls: ["memex-citation-badge", status],
+          text: `[${citationId}]`,
+          attr: { "data-citation-id": String(citationId), title },
+        });
 
         badge.addEventListener("click", () => {
           const msgDiv = contentEl.parentElement;
           // The source list starts collapsed; open it so there's something to scroll to
-          const list = msgDiv?.querySelector<HTMLElement>(".memex-citations-panel .citations-list");
-          if (list && list.style.display === "none") {
-            msgDiv!.querySelector<HTMLElement>(".memex-citations-panel .citations-toggle")?.click();
+          const panel = msgDiv?.querySelector<HTMLElement>(".memex-citations-panel");
+          if (panel && !panel.hasClass("is-expanded")) {
+            panel.querySelector<HTMLElement>(".citations-toggle")?.click();
           }
-          const panel = msgDiv?.querySelector(`.memex-citation-detail[data-citation-id="${citationId}"]`);
-          if (panel) {
-            panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-            (panel as HTMLElement).style.outline = "2px solid var(--interactive-accent)";
-            window.setTimeout(() => { (panel as HTMLElement).style.outline = "none"; }, 1500);
+          const detail = msgDiv?.querySelector<HTMLElement>(`.memex-citation-detail[data-citation-id="${citationId}"]`);
+          if (detail) {
+            detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            detail.addClass("is-highlighted");
+            window.setTimeout(() => detail.removeClass("is-highlighted"), 1500);
           }
         });
 
-        fragment.appendChild(badge);
         lastIndex = match.index + match[0].length;
       }
 
       if (lastIndex < text.length) {
-        fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+        fragment.appendText(text.slice(lastIndex));
       }
 
       replacements.push({ node: textNode, fragments: fragment });
@@ -1286,117 +1003,51 @@ If a source was used but the answer misrepresents it, set "used": true but "supp
 
     if (citations.length === 0) return;
 
-    const panel = msgDiv.createEl("div", { cls: "memex-citations-panel" });
-    panel.style.marginTop = "10px";
-    panel.style.borderTop = "1px solid var(--background-modifier-border)";
-    panel.style.paddingTop = "8px";
+    const panel = msgDiv.createDiv({ cls: "memex-citations-panel" });
 
     const verifiedCitations = citations.filter(c => c.reason && c.reason !== "");
     const verifiedCount = verifiedCitations.filter(c => c.supported).length;
     const totalVerified = verifiedCitations.length;
 
-    const toggle = panel.createEl("div", { cls: "citations-toggle" });
-    toggle.style.cursor = "pointer";
-    toggle.style.fontSize = "0.85em";
-    toggle.style.fontWeight = "bold";
-    toggle.style.opacity = "0.8";
-    toggle.style.display = "flex";
-    toggle.style.alignItems = "center";
-    toggle.style.gap = "6px";
-    toggle.style.userSelect = "none";
-
-    const statusColor = totalVerified === 0
-      ? "var(--text-muted, #888)"
-      : verifiedCount === totalVerified
-        ? "var(--text-success, #28a745)"
-        : "var(--text-warning, #ffc107)";
-
-    const statusDot = toggle.createEl("span");
-    statusDot.style.width = "8px";
-    statusDot.style.height = "8px";
-    statusDot.style.borderRadius = "50%";
-    statusDot.style.backgroundColor = statusColor;
-    statusDot.style.display = "inline-block";
+    const toggle = panel.createDiv({ cls: "citations-toggle" });
+    const overall = totalVerified === 0
+      ? "is-unchecked"
+      : verifiedCount === totalVerified ? "is-all-verified" : "is-partly-verified";
+    toggle.createSpan({ cls: ["citations-status-dot", overall] });
 
     const labelText = totalVerified > 0
       ? `Sources (${verifiedCount}/${totalVerified} verified)`
       : `Sources (${citations.length})`;
-    toggle.createEl("span", { text: labelText });
+    toggle.createSpan({ text: labelText });
+    toggle.createSpan({ cls: "citations-arrow", text: " \u25BC" });
 
-    const arrow = toggle.createEl("span", { text: " \u25BC" });
-    arrow.style.fontSize = "0.7em";
-    arrow.style.transition = "transform 0.2s ease";
+    const list = panel.createDiv({ cls: "citations-list" });
 
-    const list = panel.createEl("div", { cls: "citations-list" });
-    list.style.display = "none";
-    list.style.marginTop = "8px";
-
-    let expanded = false;
     toggle.addEventListener("click", () => {
-      expanded = !expanded;
-      list.style.display = expanded ? "block" : "none";
-      arrow.style.transform = expanded ? "rotate(180deg)" : "rotate(0deg)";
+      panel.toggleClass("is-expanded", !panel.hasClass("is-expanded"));
     });
 
     for (const citation of citations) {
       const isVerified = citation.reason && citation.reason !== "";
-      const item = list.createEl("div", { cls: "memex-citation-detail" });
-      item.setAttribute("data-citation-id", String(citation.id));
-      item.style.padding = "8px";
-      item.style.marginBottom = "6px";
-      item.style.borderRadius = "4px";
-      item.style.fontSize = "0.85em";
-      item.style.lineHeight = "1.4";
-      item.style.borderLeft = !isVerified
-        ? "3px solid var(--text-muted, #888)"
-        : citation.supported
-          ? "3px solid var(--text-success, #28a745)"
-          : "3px solid var(--text-error, #dc3545)";
-      item.style.backgroundColor = "var(--background-primary)";
-
-      const header = item.createEl("div");
-      header.style.fontWeight = "bold";
-      header.style.marginBottom = "4px";
-      header.style.display = "flex";
-      header.style.justifyContent = "space-between";
-
-      header.createEl("span", {
-        text: `[${citation.id}] From: ${citation.sourceChunk.noteTitle}`
+      const status = !isVerified ? "is-unchecked" : citation.supported ? "is-supported" : "is-unsupported";
+      const item = list.createDiv({
+        cls: ["memex-citation-detail", status],
+        attr: { "data-citation-id": String(citation.id) },
       });
 
-      const statusBadge = header.createEl("span");
-      statusBadge.style.fontSize = "0.85em";
-      statusBadge.style.padding = "1px 6px";
-      statusBadge.style.borderRadius = "3px";
+      const header = item.createDiv({ cls: "citation-detail-header" });
+      header.createSpan({
+        text: `[${citation.id}] From: ${citation.sourceChunk.noteTitle}`
+      });
+      header.createSpan({
+        cls: ["citation-status", status],
+        text: !isVerified ? "Source" : citation.supported ? "Verified" : "Not supported",
+      });
 
-      if (!isVerified) {
-        statusBadge.textContent = "Source";
-        statusBadge.style.backgroundColor = "rgba(136, 136, 136, 0.2)";
-        statusBadge.style.color = "var(--text-muted, #888)";
-      } else if (citation.supported) {
-        statusBadge.textContent = "Verified";
-        statusBadge.style.backgroundColor = "rgba(40, 167, 69, 0.2)";
-        statusBadge.style.color = "var(--text-success, #28a745)";
-      } else {
-        statusBadge.textContent = "Not supported";
-        statusBadge.style.backgroundColor = "rgba(220, 53, 69, 0.2)";
-        statusBadge.style.color = "var(--text-error, #dc3545)";
-      }
-
-      const contentPreview = item.createEl("div");
-      contentPreview.style.opacity = "0.8";
-      contentPreview.style.whiteSpace = "pre-wrap";
-      // Whole passage, scrollable: a 200-character preview once hid the exact line an answer needed
-      contentPreview.style.maxHeight = "12em";
-      contentPreview.style.overflowY = "auto";
-      contentPreview.textContent = citation.sourceChunk.content;
+      item.createDiv({ cls: "citation-passage", text: citation.sourceChunk.content });
 
       if (!citation.supported) {
-        const reasonEl = item.createEl("div");
-        reasonEl.style.marginTop = "4px";
-        reasonEl.style.fontStyle = "italic";
-        reasonEl.style.color = "var(--text-error, #dc3545)";
-        reasonEl.textContent = citation.reason;
+        item.createDiv({ cls: "citation-reason", text: citation.reason });
       }
     }
   }
@@ -1404,16 +1055,10 @@ If a source was used but the answer misrepresents it, set "used": true but "supp
   renderNoContextBanner(msgDiv: HTMLElement) {
     if (msgDiv.querySelector(".memex-no-context")) return;
 
-    const banner = msgDiv.createEl("div", { cls: "memex-no-context" });
-    banner.style.marginTop = "10px";
-    banner.style.padding = "6px 8px";
-    banner.style.borderRadius = "4px";
-    banner.style.fontSize = "0.85em";
-    banner.style.lineHeight = "1.4";
-    banner.style.borderLeft = "3px solid var(--text-warning, #ffc107)";
-    banner.style.backgroundColor = "rgba(255, 193, 7, 0.1)";
-    banner.textContent =
-      "No notes cleared the similarity threshold for this question — this answer is not grounded in your vault.";
+    msgDiv.createDiv({
+      cls: "memex-no-context",
+      text: "No notes cleared the similarity threshold for this question — this answer is not grounded in your vault.",
+    });
   }
 
   async onClose() {
@@ -1599,7 +1244,6 @@ export class ConversationSettingsModal extends Modal {
         .addSlider(slider => slider
             .setLimits(0, 1, 0.05)
             .setValue(this.tempConfig.temperature)
-            .setDynamicTooltip()
             .onChange((value) => {
                 this.tempConfig.temperature = value;
             }));

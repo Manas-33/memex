@@ -1,0 +1,551 @@
+/*
+ * Memex styles. Everything is scoped under a Memex container class, which also
+ * keeps these rules ahead of Obsidian's own button and text styles.
+ */
+
+/* ── Chat view layout ─────────────────────────────────────────────────────── */
+
+.memex-chat-view .memex-main-layout {
+  display: flex;
+  height: 100%;
+}
+
+.memex-chat-view .memex-sidebar {
+  width: 250px;
+  min-width: 150px;
+  max-width: 500px;
+  border-right: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  background-color: var(--background-secondary);
+  transition: width 0.3s ease, min-width 0.3s ease, padding 0.3s ease, opacity 0.3s ease;
+  overflow: hidden;
+}
+
+.memex-chat-view .memex-sidebar.is-collapsed {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  opacity: 0;
+}
+
+.memex-chat-view .memex-resizer {
+  width: 5px;
+  cursor: col-resize;
+  background-color: transparent;
+  height: 100%;
+  flex-shrink: 0;
+  transition: background-color 0.2s ease;
+}
+
+.memex-chat-view .memex-resizer:hover,
+.memex-chat-view .memex-resizer.is-resizing {
+  background-color: var(--interactive-accent);
+}
+
+.memex-chat-view .memex-resizer.is-hidden {
+  display: none;
+}
+
+body.memex-is-resizing {
+  cursor: col-resize;
+}
+
+.memex-chat-view .memex-chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* Anchors the floating sidebar toggle */
+  position: relative;
+}
+
+.memex-chat-view .memex-sidebar-toggle {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 10;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 4px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.memex-chat-view .memex-sidebar-toggle:hover {
+  opacity: 1;
+}
+
+/* ── Conversation list ────────────────────────────────────────────────────── */
+
+.memex-chat-view .memex-sidebar-header {
+  padding: 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.memex-chat-view .memex-sidebar-title {
+  margin: 0;
+}
+
+.memex-chat-view .memex-conversation-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.memex-chat-view .memex-conversation-item {
+  padding: 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-bottom: 5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.memex-chat-view .memex-conversation-item:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.memex-chat-view .memex-conversation-item.is-active,
+.memex-chat-view .memex-conversation-item.is-active:hover {
+  background-color: var(--background-modifier-active-hover);
+}
+
+.memex-chat-view .memex-conversation-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  margin-right: 5px;
+}
+
+.memex-chat-view .memex-conversation-menu {
+  opacity: 0.5;
+  font-size: 12px;
+}
+
+/* ── Messages and input ───────────────────────────────────────────────────── */
+
+.memex-chat-view .memex-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.memex-chat-view .memex-input-area {
+  padding: 20px;
+  border-top: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+}
+
+.memex-chat-view .memex-input {
+  width: 100%;
+  min-height: 60px;
+  resize: vertical;
+}
+
+.memex-chat-view .memex-input-buttons {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+/* ── Message bubbles ──────────────────────────────────────────────────────── */
+
+.memex-chat-view .chat-message {
+  margin-bottom: 15px;
+  padding: 10px;
+  border-radius: 8px;
+  max-width: 100%;
+  align-self: flex-start;
+  background-color: var(--background-secondary);
+  margin-right: auto;
+}
+
+.memex-chat-view .chat-message.message-user {
+  max-width: 85%;
+  align-self: flex-end;
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  margin-left: auto;
+  margin-right: 0;
+}
+
+.memex-chat-view .message-header {
+  font-size: 0.8em;
+  opacity: 0.7;
+  margin-bottom: 5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.memex-chat-view .message-timestamp {
+  font-size: 0.9em;
+  margin-left: 10px;
+  opacity: 0.8;
+}
+
+.memex-chat-view .message-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.memex-chat-view .message-action-btn {
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.memex-chat-view .message-action-btn:hover {
+  opacity: 1;
+}
+
+.memex-chat-view .memex-edit-input {
+  width: 100%;
+  min-height: 60px;
+}
+
+.memex-chat-view .memex-edit-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+/* "Journal is thinking…", "Checking sources…" */
+.memex-chat-view .typing-indicator,
+.memex-chat-view .verify-indicator {
+  opacity: 0.7;
+  font-style: italic;
+  margin-bottom: 10px;
+  padding: 10px;
+}
+
+.memex-chat-view .memex-pending {
+  opacity: 0.7;
+  font-style: italic;
+}
+
+/* ── Citations ─────────────────────────────────────────────────────────────── */
+
+.memex-chat-view .memex-citation-badge {
+  cursor: pointer;
+  font-weight: bold;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.85em;
+  position: relative;
+}
+
+.memex-chat-view .memex-citation-badge.is-supported {
+  background-color: rgba(var(--color-green-rgb), 0.2);
+  color: var(--text-success);
+}
+
+.memex-chat-view .memex-citation-badge.is-unsupported {
+  background-color: rgba(var(--color-red-rgb), 0.2);
+  color: var(--text-error);
+}
+
+.memex-chat-view .memex-citation-badge.is-unverified {
+  background-color: rgba(var(--color-yellow-rgb), 0.2);
+  color: var(--text-warning);
+}
+
+.memex-chat-view .memex-citations-panel {
+  margin-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 8px;
+}
+
+.memex-chat-view .citations-toggle {
+  cursor: pointer;
+  font-size: 0.85em;
+  font-weight: bold;
+  opacity: 0.8;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.memex-chat-view .citations-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background-color: var(--text-muted);
+}
+
+.memex-chat-view .citations-status-dot.is-all-verified {
+  background-color: var(--text-success);
+}
+
+.memex-chat-view .citations-status-dot.is-partly-verified {
+  background-color: var(--text-warning);
+}
+
+.memex-chat-view .citations-arrow {
+  font-size: 0.7em;
+  transition: transform 0.2s ease;
+}
+
+.memex-chat-view .memex-citations-panel.is-expanded .citations-arrow {
+  transform: rotate(180deg);
+}
+
+.memex-chat-view .citations-list {
+  display: none;
+  margin-top: 8px;
+}
+
+.memex-chat-view .memex-citations-panel.is-expanded .citations-list {
+  display: block;
+}
+
+.memex-chat-view .memex-citation-detail {
+  padding: 8px;
+  margin-bottom: 6px;
+  border-radius: 4px;
+  font-size: 0.85em;
+  line-height: 1.4;
+  border-left: 3px solid var(--text-muted);
+  background-color: var(--background-primary);
+}
+
+.memex-chat-view .memex-citation-detail.is-supported {
+  border-left-color: var(--text-success);
+}
+
+.memex-chat-view .memex-citation-detail.is-unsupported {
+  border-left-color: var(--text-error);
+}
+
+/* Briefly outlined after clicking its badge */
+.memex-chat-view .memex-citation-detail.is-highlighted {
+  outline: 2px solid var(--interactive-accent);
+}
+
+.memex-chat-view .citation-detail-header {
+  font-weight: bold;
+  margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.memex-chat-view .citation-status {
+  font-size: 0.85em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background-color: var(--background-modifier-hover);
+  color: var(--text-muted);
+}
+
+.memex-chat-view .citation-status.is-supported {
+  background-color: rgba(var(--color-green-rgb), 0.2);
+  color: var(--text-success);
+}
+
+.memex-chat-view .citation-status.is-unsupported {
+  background-color: rgba(var(--color-red-rgb), 0.2);
+  color: var(--text-error);
+}
+
+/* The whole passage, scrollable, rather than a preview that can cut off the relevant line */
+.memex-chat-view .citation-passage {
+  opacity: 0.8;
+  white-space: pre-wrap;
+  max-height: 12em;
+  overflow-y: auto;
+}
+
+.memex-chat-view .citation-reason {
+  margin-top: 4px;
+  font-style: italic;
+  color: var(--text-error);
+}
+
+.memex-chat-view .memex-no-context {
+  margin-top: 10px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 0.85em;
+  line-height: 1.4;
+  border-left: 3px solid var(--text-warning);
+  background-color: rgba(var(--color-yellow-rgb), 0.1);
+}
+
+/* ── PDF export ───────────────────────────────────────────────────────────────
+ * A temporary overlay html2pdf captures. Colors are fixed print colors rather
+ * than theme variables: the PDF is white paper, so dark-theme text would vanish. */
+
+.memex-pdf-export {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 9999;
+  background-color: white;
+  overflow-y: auto;
+  padding: 40px;
+}
+
+.memex-pdf-export .memex-pdf-page {
+  width: 700px;
+  max-width: 100%;
+  margin: 0 auto;
+  color: black;
+  background-color: white;
+  font-family: Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  padding: 20px;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+}
+
+.memex-pdf-export .memex-pdf-title {
+  font-size: 24px;
+  margin-bottom: 10px;
+  color: black;
+  font-weight: bold;
+}
+
+.memex-pdf-export .memex-pdf-date {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 20px;
+}
+
+.memex-pdf-export .memex-pdf-rule {
+  border: none;
+  border-top: 2px solid #ddd;
+  margin-bottom: 20px;
+}
+
+.memex-pdf-export .memex-pdf-message {
+  margin-bottom: 25px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #e0e0e0;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.memex-pdf-export .memex-pdf-message-header {
+  font-weight: bold;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: #10ac84;
+}
+
+.memex-pdf-export .memex-pdf-message-header.is-user {
+  color: #2e86de;
+}
+
+.memex-pdf-export .memex-pdf-message-body {
+  color: black;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* Rendered Markdown inside a message */
+.memex-pdf-export .memex-pdf-message-body * {
+  color: black;
+  font-family: Arial, sans-serif;
+}
+
+.memex-pdf-export .memex-pdf-message-body p {
+  margin-bottom: 10px;
+  margin-top: 0;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.memex-pdf-export .memex-pdf-message-body :is(h1, h2, h3) {
+  font-weight: bold;
+  page-break-inside: avoid;
+  break-inside: avoid;
+  page-break-after: avoid;
+  break-after: avoid;
+}
+
+.memex-pdf-export .memex-pdf-message-body h1 {
+  font-size: 20px;
+  margin-top: 15px;
+  margin-bottom: 10px;
+}
+
+.memex-pdf-export .memex-pdf-message-body h2 {
+  font-size: 18px;
+  margin-top: 12px;
+  margin-bottom: 8px;
+}
+
+.memex-pdf-export .memex-pdf-message-body h3 {
+  font-size: 16px;
+  margin-top: 10px;
+  margin-bottom: 6px;
+}
+
+.memex-pdf-export .memex-pdf-message-body :is(ul, ol) {
+  margin-left: 20px;
+  margin-bottom: 10px;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.memex-pdf-export .memex-pdf-message-body li {
+  margin-bottom: 5px;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.memex-pdf-export .memex-pdf-message-body code {
+  background-color: #f5f5f5;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 13px;
+  overflow-wrap: break-word;
+}
+
+.memex-pdf-export .memex-pdf-message-body pre {
+  background-color: #f5f5f5;
+  padding: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.memex-pdf-export .memex-pdf-message-body blockquote {
+  border-left: 4px solid #ddd;
+  padding-left: 15px;
+  margin-left: 0;
+  color: #666;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.memex-pdf-export .memex-pdf-message-body a {
+  color: #2e86de;
+  text-decoration: underline;
+}
+
+.memex-pdf-export .memex-pdf-message-body img {
+  max-width: 100%;
+  height: auto;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}

@@ -522,7 +522,6 @@ class MemexSettingTab extends PluginSettingTab {
         .addSlider(slider => slider
             .setLimits(0, 1, 0.05)
             .setValue(this.plugin.settings.defaultTemperature)
-            .setDynamicTooltip()
             .onChange(async (value) => {
                 this.plugin.settings.defaultTemperature = value;
                 await this.plugin.saveSettings();
@@ -587,7 +586,6 @@ class MemexSettingTab extends PluginSettingTab {
         .addSlider(slider => slider
             .setLimits(1, 20, 1)
             .setValue(this.plugin.settings.topK)
-            .setDynamicTooltip()
             .onChange(async (value) => {
                 this.plugin.settings.topK = value;
                 await this.plugin.saveSettings();
@@ -599,7 +597,6 @@ class MemexSettingTab extends PluginSettingTab {
         .addSlider(slider => slider
             .setLimits(0, 1, 0.01)
             .setValue(this.plugin.settings.similarityThreshold)
-            .setDynamicTooltip()
             .onChange(async (value) => {
                 this.plugin.settings.similarityThreshold = value;
                 await this.plugin.saveSettings();

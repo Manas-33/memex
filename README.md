@@ -22,7 +22,7 @@ npm install && npm run build
 
 # 2️⃣  Install into your vault
 mkdir -p <your-vault>/.obsidian/plugins/memex
-cp main.js manifest.json <your-vault>/.obsidian/plugins/memex/
+cp main.js manifest.json styles.css <your-vault>/.obsidian/plugins/memex/
 
 # 3️⃣  Enable in Obsidian
 #     Settings → Community Plugins → Reload → Toggle "Memex" ON
