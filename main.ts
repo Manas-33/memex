@@ -1,10 +1,11 @@
-import { App, Plugin, PluginSettingTab, Setting, WorkspaceLeaf, Notice, MarkdownView, Editor } from "obsidian";
+import { App, Plugin, PluginSettingTab, Setting, WorkspaceLeaf, Notice, MarkdownView, Editor, requestUrl } from "obsidian";
 import { LLMService } from "./llm_service";
 import { Processor } from "./processor";
 import { ChatView, VIEW_TYPE_CHAT } from "./chat_view";
 import { ConversationManager } from "./conversation_manager";
 import { EmbeddingService } from "./embedding_service";
-import { VectorStore } from "./vector_store";
+import { IVectorStore, LocalVectorStore } from "./vector_store";
+import { HttpRequest, QdrantVectorStore } from "./qdrant_store";
 import { RAGService, RetrievalMode } from "./rag_service";
 import { ProviderType, createLLMProvider, createEmbeddingProvider } from "./providers";
 
@@ -34,6 +35,10 @@ interface MemexSettings {
   autoIndexOnChange: boolean;
   excludedFolders: string[];
   chromaDbPath: string;
+  vectorStoreType: "local" | "qdrant";
+  qdrantUrl: string;
+  qdrantApiKey: string;
+  qdrantCollection: string;
   citationTrustMode: "off" | "relaxed" | "strict";
 }
 
@@ -68,6 +73,10 @@ const DEFAULT_SETTINGS: MemexSettings = {
   autoIndexOnChange: true,
   excludedFolders: ["Templates", ".obsidian"],
   chromaDbPath: ".obsidian/plugins/memex/chromadb",
+  vectorStoreType: "local",
+  qdrantUrl: "http://localhost:6333",
+  qdrantApiKey: "",
+  qdrantCollection: "memex",
   citationTrustMode: "relaxed",
 };
 export default class MemexPlugin extends Plugin {
@@ -76,7 +85,7 @@ export default class MemexPlugin extends Plugin {
   processor: Processor;
   conversationManager: ConversationManager;
   embeddingService: EmbeddingService;
-  vectorStore: VectorStore;
+  vectorStore: IVectorStore;
   ragService: RAGService;
 
   async onload() {
@@ -100,7 +109,9 @@ export default class MemexPlugin extends Plugin {
 
         const vectorStorePath = `${this.settings.chromaDbPath}/vectors.json`;
         const contentHashesPath = `${this.settings.chromaDbPath}/content_hashes.json`;
-        this.vectorStore = new VectorStore(this.app, vectorStorePath);
+        this.vectorStore = this.settings.vectorStoreType === "qdrant"
+          ? this.createQdrantStore()
+          : new LocalVectorStore(this.app, vectorStorePath);
 
         this.ragService = new RAGService(
           this.app,
@@ -253,6 +264,34 @@ export default class MemexPlugin extends Plugin {
     // RAG Commands
     if (this.settings.ragEnabled && this.ragService) {
       this.addCommand({
+        id: "upload-index-to-qdrant",
+        name: "Upload local index to Qdrant",
+        callback: async () => {
+          const local = new LocalVectorStore(this.app, `${this.settings.chromaDbPath}/vectors.json`);
+          const qdrant = this.createQdrantStore();
+          try {
+            await local.initialize();
+            const docs = local.getAllDocuments();
+            if (docs.length === 0) {
+              new Notice("The local index is empty. Index your vault first.");
+              return;
+            }
+            // Reuses the stored embeddings, so this makes no embedding API calls
+            new Notice(`Uploading ${docs.length} chunks to Qdrant...`);
+            await qdrant.initialize();
+            await qdrant.addDocuments(docs);
+            new Notice(`Uploaded ${docs.length} chunks to Qdrant.`);
+            if (this.settings.vectorStoreType === "qdrant") {
+              await this.vectorStore.initialize();
+            }
+          } catch (error) {
+            console.error("Qdrant upload failed:", error);
+            new Notice("Upload to Qdrant failed. Check the Qdrant URL and API key in settings.");
+          }
+        },
+      });
+
+      this.addCommand({
         id: "index-vault-rag",
         name: "Index Vault for RAG",
         callback: async () => {
@@ -279,7 +318,10 @@ export default class MemexPlugin extends Plugin {
         id: "clear-rag-index",
         name: "Clear RAG Index",
         callback: async () => {
-          if (confirm("Are you sure you want to clear the RAG index? This cannot be undone.")) {
+          const target = this.settings.vectorStoreType === "qdrant"
+            ? "the shared Qdrant index for ALL your devices"
+            : "the RAG index";
+          if (confirm(`Are you sure you want to clear ${target}? This cannot be undone.`)) {
             try {
               await this.ragService.clearIndex();
               new Notice("RAG index cleared");
@@ -383,6 +425,26 @@ export default class MemexPlugin extends Plugin {
   }
 
   onunload() {}
+
+  /** Qdrant store over Obsidian's requestUrl, which works on desktop and mobile without CORS issues. */
+  createQdrantStore(): QdrantVectorStore {
+    const http: HttpRequest = async ({ url, method, headers, body }) => {
+      const res = await requestUrl({ url, method, headers, body, throw: false });
+      let json: any = null;
+      try {
+        json = res.json;
+      } catch {
+        // Non-JSON body
+      }
+      return { status: res.status, json };
+    };
+    return new QdrantVectorStore(
+      http,
+      this.settings.qdrantUrl,
+      this.settings.qdrantApiKey,
+      this.settings.qdrantCollection
+    );
+  }
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -635,6 +697,52 @@ class MemexSettingTab extends PluginSettingTab {
             .setValue(this.plugin.settings.retrievalMode)
             .onChange(async (value) => {
                 this.plugin.settings.retrievalMode = value as RetrievalMode;
+                await this.plugin.saveSettings();
+            }));
+
+    new Setting(containerEl)
+        .setName("Vector Store")
+        .setDesc("Local keeps the index in this vault. Qdrant keeps one shared index that all your devices use. Reload the plugin after changing this.")
+        .addDropdown(dropdown => dropdown
+            .addOption("local", "Local (this vault)")
+            .addOption("qdrant", "Qdrant (shared)")
+            .setValue(this.plugin.settings.vectorStoreType)
+            .onChange(async (value) => {
+                this.plugin.settings.vectorStoreType = value as "local" | "qdrant";
+                await this.plugin.saveSettings();
+                new Notice("Reload the plugin to switch vector stores.");
+            }));
+
+    new Setting(containerEl)
+        .setName("Qdrant URL")
+        .setDesc("Used when Vector Store is Qdrant, e.g. https://your-cluster.cloud.qdrant.io:6333")
+        .addText(text => text
+            .setPlaceholder("http://localhost:6333")
+            .setValue(this.plugin.settings.qdrantUrl)
+            .onChange(async (value) => {
+                this.plugin.settings.qdrantUrl = value.trim();
+                await this.plugin.saveSettings();
+            }));
+
+    new Setting(containerEl)
+        .setName("Qdrant API Key")
+        .setDesc("Leave empty for a local Qdrant without authentication")
+        .addText(text => {
+            text.inputEl.type = "password";
+            text.setValue(this.plugin.settings.qdrantApiKey)
+                .onChange(async (value) => {
+                    this.plugin.settings.qdrantApiKey = value.trim();
+                    await this.plugin.saveSettings();
+                });
+        });
+
+    new Setting(containerEl)
+        .setName("Qdrant Collection")
+        .setDesc("Every device pointing at the same collection shares one index")
+        .addText(text => text
+            .setValue(this.plugin.settings.qdrantCollection)
+            .onChange(async (value) => {
+                this.plugin.settings.qdrantCollection = value.trim() || "memex";
                 await this.plugin.saveSettings();
             }));
 

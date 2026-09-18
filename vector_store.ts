@@ -1,5 +1,5 @@
 import { App } from "obsidian";
-import { LexicalIndex, reciprocalRankFusion } from "./lexical_index";
+import { LexicalIndex, hybridRank } from "./lexical_index";
 
 export interface VectorDocument {
   id: string;
@@ -27,6 +27,23 @@ export interface SearchResult {
   similarity: number;
 }
 
+/** What the RAG service needs from a vector store; implemented locally and by Qdrant. */
+export interface IVectorStore {
+  initialize(): Promise<void>;
+  addDocuments(documents: VectorDocument[]): Promise<void>;
+  deleteDocumentsByPath(filePath: string): Promise<void>;
+  search(queryEmbedding: number[], topK?: number, similarityThreshold?: number): Promise<SearchResult[]>;
+  searchHybrid(
+    queryEmbedding: number[],
+    queryText: string,
+    topK?: number,
+    similarityThreshold?: number,
+    keywordWeight?: number
+  ): Promise<SearchResult[]>;
+  clearAll(): Promise<void>;
+  getCount(): Promise<number>;
+}
+
 interface VectorStoreData {
   documents: VectorDocument[];
   version: string;
@@ -43,7 +60,7 @@ interface IndexedDocument {
   norm: number;            // Pre-computed L2 norm
 }
 
-export class VectorStore {
+export class LocalVectorStore implements IVectorStore {
   private documents: Map<string, IndexedDocument> = new Map();
   /** Secondary index: filePath → Set of document IDs for O(1) path lookups */
   private pathIndex: Map<string, Set<string>> = new Map();
@@ -303,7 +320,7 @@ export class VectorStore {
     }
 
     // Sort final results descending by similarity
-    heap.sort((a, b) => b.similarity - a.similarity);
+    heap.sort((a, b) => b.similarity - a.similarity || (a.doc.id < b.doc.id ? -1 : 1));
 
     return heap.map(({ doc, similarity }) => ({
       id: doc.id,
@@ -334,17 +351,12 @@ export class VectorStore {
       return [];
     }
 
-    const scored: Array<{ doc: VectorDocument; similarity: number }> = [];
+    const dense: { id: string; similarity: number }[] = [];
     for (const indexed of this.documents.values()) {
-      scored.push({
-        doc: indexed.doc,
+      dense.push({
+        id: indexed.doc.id,
         similarity: this.cosineSimilarityWithNorms(queryVec, queryNorm, indexed.embedding, indexed.norm),
       });
-    }
-    scored.sort((a, b) => b.similarity - a.similarity);
-
-    if (scored[0].similarity < similarityThreshold) {
-      return [];
     }
 
     if (this.lexicalDirty) {
@@ -352,19 +364,10 @@ export class VectorStore {
       this.lexicalDirty = false;
     }
 
-    const keywordRanking = [...this.lexical.score(queryText).entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([id]) => id);
-
-    const fused = reciprocalRankFusion([
-      { ids: scored.map(({ doc }) => doc.id), weight: 1 },
-      { ids: keywordRanking, weight: keywordWeight },
-    ]).slice(0, topK);
-
-    const byId = new Map(scored.map((s) => [s.doc.id, s]));
-    return fused.map((id) => {
-      const { doc, similarity } = byId.get(id)!;
-      return { id: doc.id, content: doc.content, metadata: doc.metadata, similarity };
+    const similarityById = new Map(dense.map((d) => [d.id, d.similarity]));
+    return hybridRank(dense, this.lexical, queryText, topK, similarityThreshold, keywordWeight).map((id) => {
+      const { doc } = this.documents.get(id)!;
+      return { id: doc.id, content: doc.content, metadata: doc.metadata, similarity: similarityById.get(id)! };
     });
   }
 
@@ -435,6 +438,11 @@ export class VectorStore {
     this.lexicalDirty = true;
     await this.saveToDisk();
     console.log("Vector Store: Cleared all documents");
+  }
+
+  /** Every stored document, for moving the index to another store. */
+  getAllDocuments(): VectorDocument[] {
+    return [...this.documents.values()].map(({ doc }) => doc);
   }
 
   /**

@@ -90,11 +90,58 @@ export function reciprocalRankFusion(
   rankings: { ids: string[]; weight: number }[],
   k = 60
 ): string[] {
-  const fused = new Map<string, number>();
+  const fused = new Map<string, { score: number; firstSeen: number }>();
   for (const { ids, weight } of rankings) {
     ids.forEach((id, i) => {
-      fused.set(id, (fused.get(id) || 0) + weight / (k + i + 1));
+      const entry = fused.get(id) || { score: 0, firstSeen: fused.size };
+      entry.score += weight / (k + i + 1);
+      fused.set(id, entry);
     });
   }
-  return [...fused.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+  // Equal weights make exact ties common (ranks 2 & 5 score the same as 5 & 2);
+  // those go to whichever the first ranking placed higher.
+  return [...fused.entries()]
+    .sort((a, b) => b[1].score - a[1].score || a[1].firstSeen - b[1].firstSeen)
+    .map(([id]) => id);
+}
+
+/** Highest score first; exact ties broken by id so every store orders them identically. */
+function byScoreThenId(a: [string, number], b: [string, number]): number {
+  return b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+}
+
+/**
+ * Hybrid ranking shared by every vector store, so they return identical results.
+ *
+ * `dense` must cover every chunk (order doesn't matter). The threshold is a
+ * query-level gate on the best cosine score rather than a per-chunk filter:
+ * keyword matches on ordinary words would otherwise give every off-topic
+ * question a result, and the no-context fallback could never fire.
+ */
+export function hybridRank(
+  dense: { id: string; similarity: number }[],
+  lexical: LexicalIndex,
+  queryText: string,
+  topK: number,
+  similarityThreshold: number,
+  keywordWeight = 1
+): string[] {
+  const denseRanking = dense
+    .map((d): [string, number] => [d.id, d.similarity])
+    .sort(byScoreThenId);
+  if (denseRanking.length === 0 || denseRanking[0][1] < similarityThreshold) {
+    return [];
+  }
+
+  // Only rank chunks that still exist; a store's keyword index can briefly hold
+  // chunks another device has already deleted.
+  const live = new Set(denseRanking.map(([id]) => id));
+  const keywordRanking = [...lexical.score(queryText).entries()]
+    .filter(([id]) => live.has(id))
+    .sort(byScoreThenId);
+
+  return reciprocalRankFusion([
+    { ids: denseRanking.map(([id]) => id), weight: 1 },
+    { ids: keywordRanking.map(([id]) => id), weight: keywordWeight },
+  ]).slice(0, topK);
 }

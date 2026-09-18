@@ -1,6 +1,6 @@
 import { App, TFile, TAbstractFile, Notice } from "obsidian";
 import { EmbeddingService, DocumentChunk } from "./embedding_service";
-import { VectorStore, VectorDocument, SearchResult } from "./vector_store";
+import { IVectorStore, VectorDocument, SearchResult } from "./vector_store";
 
 export interface RAGContext {
   query: string;
@@ -15,7 +15,7 @@ export type RetrievalMode = "vector" | "hybrid";
 export class RAGService {
   private app: App;
   private embeddingService: EmbeddingService;
-  private vectorStore: VectorStore;
+  private vectorStore: IVectorStore;
   private isInitialized: boolean = false;
   private excludedFolders: string[];
   private autoIndexOnChange: boolean;
@@ -31,7 +31,7 @@ export class RAGService {
   constructor(
     app: App,
     embeddingService: EmbeddingService,
-    vectorStore: VectorStore,
+    vectorStore: IVectorStore,
     contentHashesPath: string,
     excludedFolders: string[] = [],
     autoIndexOnChange: boolean = true
