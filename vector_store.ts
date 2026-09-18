@@ -1,4 +1,5 @@
 import { App } from "obsidian";
+import { LexicalIndex, reciprocalRankFusion } from "./lexical_index";
 
 export interface VectorDocument {
   id: string;
@@ -49,6 +50,9 @@ export class VectorStore {
   private dbPath: string;
   private app: App;
   private saveTimeout: NodeJS.Timeout | null = null;
+  private lexical = new LexicalIndex();
+  /** Set whenever documents change; the keyword index is rebuilt lazily on the next hybrid search. */
+  private lexicalDirty = true;
 
   constructor(app: App, dbPath: string) {
     this.app = app;
@@ -100,6 +104,7 @@ export class VectorStore {
     const embedding = new Float32Array(doc.embedding);
     const norm = this.computeNorm(embedding);
     this.documents.set(doc.id, { doc, embedding, norm });
+    this.lexicalDirty = true;
 
     // Update path index
     if (!this.pathIndex.has(doc.metadata.filePath)) {
@@ -122,6 +127,7 @@ export class VectorStore {
         }
       }
       this.documents.delete(id);
+      this.lexicalDirty = true;
     }
   }
 
@@ -308,6 +314,61 @@ export class VectorStore {
   }
 
   /**
+   * Hybrid retrieval: the vector ranking fused with a BM25 keyword ranking via RRF.
+   *
+   * The similarity threshold is applied as a query-level gate on the best cosine
+   * score rather than per chunk. Without the gate, BM25 matches ordinary words in
+   * any question, so off-topic queries would always return something and the
+   * no-context fallback could never fire.
+   */
+  async searchHybrid(
+    queryEmbedding: number[],
+    queryText: string,
+    topK: number = 5,
+    similarityThreshold: number = 0.7,
+    keywordWeight: number = 1
+  ): Promise<SearchResult[]> {
+    const queryVec = new Float32Array(queryEmbedding);
+    const queryNorm = this.computeNorm(queryVec);
+    if (queryNorm === 0 || this.documents.size === 0) {
+      return [];
+    }
+
+    const scored: Array<{ doc: VectorDocument; similarity: number }> = [];
+    for (const indexed of this.documents.values()) {
+      scored.push({
+        doc: indexed.doc,
+        similarity: this.cosineSimilarityWithNorms(queryVec, queryNorm, indexed.embedding, indexed.norm),
+      });
+    }
+    scored.sort((a, b) => b.similarity - a.similarity);
+
+    if (scored[0].similarity < similarityThreshold) {
+      return [];
+    }
+
+    if (this.lexicalDirty) {
+      this.lexical.build([...this.documents.values()].map(({ doc }) => doc));
+      this.lexicalDirty = false;
+    }
+
+    const keywordRanking = [...this.lexical.score(queryText).entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([id]) => id);
+
+    const fused = reciprocalRankFusion([
+      { ids: scored.map(({ doc }) => doc.id), weight: 1 },
+      { ids: keywordRanking, weight: keywordWeight },
+    ]).slice(0, topK);
+
+    const byId = new Map(scored.map((s) => [s.doc.id, s]));
+    return fused.map((id) => {
+      const { doc, similarity } = byId.get(id)!;
+      return { id: doc.id, content: doc.content, metadata: doc.metadata, similarity };
+    });
+  }
+
+  /**
    * Min-heap bubble up: maintain heap property after insertion
    */
   private heapBubbleUp(
@@ -371,6 +432,7 @@ export class VectorStore {
   async clearAll(): Promise<void> {
     this.documents.clear();
     this.pathIndex.clear();
+    this.lexicalDirty = true;
     await this.saveToDisk();
     console.log("Vector Store: Cleared all documents");
   }

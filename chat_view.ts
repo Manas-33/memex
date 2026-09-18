@@ -660,7 +660,8 @@ export class ChatView extends ItemView {
               ragContext = await this.ragService.retrieveContext(
                 ragQuery,
                 topK,
-                similarityThreshold
+                similarityThreshold,
+                this.settings.retrievalMode
               );
 
               if (ragContext && ragContext.formattedContext) {

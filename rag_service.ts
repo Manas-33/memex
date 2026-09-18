@@ -10,6 +10,8 @@ export interface RAGContext {
   chunkMap: Map<number, SearchResult>;
 }
 
+export type RetrievalMode = "vector" | "hybrid";
+
 export class RAGService {
   private app: App;
   private embeddingService: EmbeddingService;
@@ -309,7 +311,8 @@ export class RAGService {
   async retrieveContext(
     query: string,
     topK: number = 5,
-    similarityThreshold: number = 0.7
+    similarityThreshold: number = 0.7,
+    mode: RetrievalMode = "vector"
   ): Promise<RAGContext> {
     if (!this.isInitialized) {
       throw new Error("RAG Service not initialized");
@@ -318,11 +321,9 @@ export class RAGService {
     try {
       const queryEmbedding = await this.embeddingService.generateEmbedding(query);
 
-      const retrievedChunks = await this.vectorStore.search(
-        queryEmbedding,
-        topK,
-        similarityThreshold
-      );
+      const retrievedChunks = mode === "hybrid"
+        ? await this.vectorStore.searchHybrid(queryEmbedding, query, topK, similarityThreshold)
+        : await this.vectorStore.search(queryEmbedding, topK, similarityThreshold);
 
       const { formattedContext, chunkMap } = this.formatContext(retrievedChunks);
 

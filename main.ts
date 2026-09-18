@@ -5,7 +5,7 @@ import { ChatView, VIEW_TYPE_CHAT } from "./chat_view";
 import { ConversationManager } from "./conversation_manager";
 import { EmbeddingService } from "./embedding_service";
 import { VectorStore } from "./vector_store";
-import { RAGService } from "./rag_service";
+import { RAGService, RetrievalMode } from "./rag_service";
 import { ProviderType, createLLMProvider, createEmbeddingProvider } from "./providers";
 
 interface MemexSettings {
@@ -30,6 +30,7 @@ interface MemexSettings {
   chunkOverlap: number;
   topK: number;
   similarityThreshold: number;
+  retrievalMode: RetrievalMode;
   autoIndexOnChange: boolean;
   excludedFolders: string[];
   chromaDbPath: string;
@@ -63,6 +64,7 @@ const DEFAULT_SETTINGS: MemexSettings = {
   chunkOverlap: 30,
   topK: 6,
   similarityThreshold: 0.58,
+  retrievalMode: "hybrid",
   autoIndexOnChange: true,
   excludedFolders: ["Templates", ".obsidian"],
   chromaDbPath: ".obsidian/plugins/memex/chromadb",
@@ -614,13 +616,25 @@ class MemexSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
         .setName("Similarity Threshold")
-        .setDesc("Minimum similarity score for retrieved chunks (0.0 - 1.0, default: 0.7)")
+        .setDesc("If no note scores at least this well, the question is treated as not covered by your vault (0.0 - 1.0, default: 0.58)")
         .addSlider(slider => slider
-            .setLimits(0, 1, 0.05)
+            .setLimits(0, 1, 0.01)
             .setValue(this.plugin.settings.similarityThreshold)
             .setDynamicTooltip()
             .onChange(async (value) => {
                 this.plugin.settings.similarityThreshold = value;
+                await this.plugin.saveSettings();
+            }));
+
+    new Setting(containerEl)
+        .setName("Retrieval Mode")
+        .setDesc("Hybrid adds keyword matching to semantic search, which finds exact names, terms and identifiers that semantic search alone often misses.")
+        .addDropdown(dropdown => dropdown
+            .addOption("hybrid", "Hybrid (semantic + keyword)")
+            .addOption("vector", "Semantic only")
+            .setValue(this.plugin.settings.retrievalMode)
+            .onChange(async (value) => {
+                this.plugin.settings.retrievalMode = value as RetrievalMode;
                 await this.plugin.saveSettings();
             }));
 
