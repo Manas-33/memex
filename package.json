@@ -1,17 +1,19 @@
 {
     "name": "memex",
     "version": "1.0.0",
-    "description": "Memex — an AI-powered knowledge companion for Obsidian",
+    "description": "Memex \u2014 an AI-powered knowledge companion for Obsidian",
     "main": "main.js",
     "scripts": {
         "dev": "node esbuild.config.mjs",
         "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-        "version": "node version-bump.mjs && git add manifest.json versions.json"
+        "version": "node version-bump.mjs && git add manifest.json versions.json",
+        "build:mcp": "tsc -noEmit -skipLibCheck && node esbuild.mcp.mjs"
     },
     "keywords": [],
     "author": "",
     "license": "MIT",
     "devDependencies": {
+        "@modelcontextprotocol/sdk": "^1.30.0",
         "@types/node": "^16.11.6",
         "@typescript-eslint/eslint-plugin": "5.29.0",
         "@typescript-eslint/parser": "5.29.0",
@@ -19,7 +21,8 @@
         "esbuild": "0.17.3",
         "obsidian": "latest",
         "tslib": "2.4.0",
-        "typescript": "4.7.4"
+        "typescript": "4.7.4",
+        "zod": "^4.6.5"
     },
     "dependencies": {
         "@lancedb/lancedb": "^0.22.3",

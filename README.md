@@ -79,6 +79,41 @@ Swap between providers at any time — no restart required:
 
 Both providers implement the same `ILLMProvider` / `IEmbeddingProvider` interfaces using OpenAI-compatible endpoints, so any model that speaks that protocol works.
 
+### 🤖 MCP Server — your notes inside Claude
+A standalone [MCP](https://modelcontextprotocol.io) server gives Claude Desktop, Claude Code and other MCP clients **read-only** access to your vault, using the plugin's own index and search.
+
+- **Tools** — `search_notes` (hybrid semantic + keyword search with the same results as the chat panel; returns `found: false` when nothing clears the relevance threshold), `read_note`, `list_notes`. Each declares input and output JSON Schemas.
+- **Resources** — every note as `memex://note/{path}` (Markdown), plus `memex://index/stats` (JSON).
+- **No extra config** — reads the plugin's own settings (provider, API key, threshold, local or Qdrant index) from your vault.
+- **Read-only and sandboxed** — never writes, and refuses paths outside the vault, including symlinks, hidden folders and your excluded folders.
+
+Index your vault in Obsidian first, then build the server once:
+
+```bash
+npm run build:mcp   # → mcp-server.js
+```
+
+**Claude Code:**
+
+```bash
+claude mcp add memex --scope user -- node /absolute/path/to/memex/mcp-server.js "/absolute/path/to/your/vault"
+```
+
+**Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
+
+```json
+{
+  "mcpServers": {
+    "memex": {
+      "command": "/absolute/path/to/node",
+      "args": ["/absolute/path/to/memex/mcp-server.js", "/absolute/path/to/your/vault"]
+    }
+  }
+}
+```
+
+Use the full path from `which node`: Claude Desktop doesn't see version managers such as nvm.
+
 ---
 
 ## 🎮 Usage
@@ -144,15 +179,20 @@ Go to **Settings → Memex**.
 ## 🏗️ Architecture
 
 ```
-main.ts                  → Plugin entry point, settings, commands
+main.ts                  → Plugin entry point, commands, settings UI
+├── settings.ts          → Settings type + defaults (shared with the MCP server)
 ├── providers.ts         → LLM & Embedding provider interfaces + Local/Gemini implementations
 ├── llm_service.ts       → LLM service (completion + streaming)
 ├── embedding_service.ts → Chunking + batch embedding generation
-├── vector_store.ts      → JSON-backed vector store with Float32Array + min-heap search
+├── vector_store.ts      → IVectorStore + local JSON store (Float32Array + min-heap search)
+├── qdrant_store.ts      → Qdrant-backed store (plain REST), shared across devices
+├── lexical_index.ts     → BM25 keyword index + Reciprocal Rank Fusion for hybrid search
 ├── rag_service.ts       → RAG orchestration (indexing, retrieval, query rewriting)
 ├── processor.ts         → Note processing (tags, action items, weekly summary)
 ├── conversation_manager.ts → Conversation CRUD (JSON files in .memex/)
 └── chat_view.ts         → Chat UI (sidebar, messages, streaming, PDF export)
+
+mcp/server.ts            → MCP server (stdio) reusing the retrieval code above
 ```
 
 ---
