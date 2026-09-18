@@ -615,7 +615,8 @@ export class ChatView extends ItemView {
 
         // Add RAG context if enabled and available
         let ragContext: RAGContext | null = null;
-        if (this.ragService && this.settings.ragEnabled) {
+        const ragEnabled = this.currentConversation!.config?.ragEnabled ?? this.settings.ragEnabled;
+        if (this.ragService && ragEnabled) {
           try {
             const lastUserMessage = this.currentConversation!.messages
               .filter(m => m.role === "user")
@@ -788,9 +789,20 @@ export class ChatView extends ItemView {
           verifyIndicator.style.padding = "10px";
           this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
 
+          const replaceAnswer = async (text: string) => {
+            fullContent = text;
+            assistantMsg.content = text;
+            if (contentEl) {
+              contentEl.empty();
+              await MarkdownRenderer.renderMarkdown(text, contentEl, "", this.component);
+            }
+          };
+
+          let verified = false;
           try {
             const attribution = await this.attributeSources(fullContent, ragContext.chunkMap);
             if (attribution.length > 0) {
+              verified = true;
               const attrMap = new Map(attribution.map(a => [a.id, a]));
               assistantMsg.citations = assistantMsg.citations!.map(c =>
                 attrMap.has(c.id) ? attrMap.get(c.id)! : c
@@ -800,14 +812,8 @@ export class ChatView extends ItemView {
                 const usedSources = attribution.filter(a => a.reason !== "");
                 const unsupported = usedSources.filter(a => !a.supported);
                 if (unsupported.length > 0) {
-                  fullContent = "I cannot provide a verified answer. The following claims could not be confirmed by sources:\n\n"
-                    + unsupported.map(c => `- ${c.claim}: ${c.reason}`).join("\n");
-                  assistantMsg.content = fullContent;
-
-                  if (contentEl) {
-                    contentEl.empty();
-                    await MarkdownRenderer.renderMarkdown(fullContent, contentEl, "", this.component);
-                  }
+                  await replaceAnswer("I cannot provide a verified answer. The following claims could not be confirmed by sources:\n\n"
+                    + unsupported.map(c => `- ${c.claim}: ${c.reason}`).join("\n"));
                 }
               }
             }
@@ -815,6 +821,12 @@ export class ChatView extends ItemView {
             console.error("Source attribution failed:", attrError);
           } finally {
             verifyIndicator.remove();
+          }
+
+          // Strict mode promises nothing unverified is shown, so a check that
+          // couldn't run (API error, unparseable reply) has to count as a failure
+          if (trustMode === "strict" && !verified) {
+            await replaceAnswer("I couldn't verify this answer against your notes, so strict mode is hiding it. Try asking again, or switch Citation Trust Mode to Relaxed.");
           }
 
           // Style any [N] markers the model produced as badges
@@ -986,11 +998,13 @@ export class ChatView extends ItemView {
     const content = msgDiv.createEl("div", { cls: "message-content" });
     
     if (message.role === "assistant" || message.role === "system") {
-        MarkdownRenderer.renderMarkdown(message.content, content, "", this.component);
+        const rendered = MarkdownRenderer.renderMarkdown(message.content, content, "", this.component);
 
         if (message.citations && message.citations.length > 0) {
-          this.renderCitationBadges(content, message.citations);
-          this.renderCitationsPanel(msgDiv, message.citations);
+          const citations = message.citations;
+          // Badges rewrite the rendered text, so they must wait for rendering to finish
+          rendered.then(() => this.renderCitationBadges(content, citations));
+          this.renderCitationsPanel(msgDiv, citations);
         }
 
         if (message.noContextFound) {
@@ -1153,7 +1167,7 @@ If a source was used but the answer misrepresents it, set "used": true but "supp
           id,
           claim: s.claim || "",
           supported: s.used ? !!s.supported : true,
-          reason: s.used ? (s.reason || "Supports the answer") : "",
+          reason: s.used ? (s.reason || (s.supported ? "Supports the answer" : "No reason given")) : "",
           sourceChunk: {
             noteTitle: chunk.metadata.noteTitle,
             filePath: chunk.metadata.filePath,
@@ -1169,98 +1183,17 @@ If a source was used but the answer misrepresents it, set "used": true but "supp
     }
   }
 
-  async verifyCitations(
-    answer: string,
-    chunkMap: Map<number, SearchResult>
-  ): Promise<CitationVerification[]> {
-    const citationIds = [...new Set(
-      (answer.match(/\[(\d+)\]/g) || []).map(m => parseInt(m.slice(1, -1)))
-    )].filter(id => chunkMap.has(id));
-
-    if (citationIds.length === 0) return [];
-
-    let passagesText = "";
-    for (const id of citationIds) {
-      const chunk = chunkMap.get(id)!;
-      passagesText += `[${id}] (From: ${chunk.metadata.noteTitle})\n${chunk.content}\n\n`;
-    }
-
-    const verifyMessages = [
-      {
-        role: "system",
-        content: `You are a citation verifier. You will receive an answer that cites numbered source passages, and the source passages themselves. For each citation [N] used in the answer, determine whether the cited passage actually supports the claim being made.
-
-Return ONLY valid JSON in this exact format, no other text:
-{"citations": [{"id": 1, "claim": "the claim made", "supported": true, "reason": "why it is or isn't supported"}]}`
-      },
-      {
-        role: "user",
-        content: `Answer:\n${answer}\n\nSource Passages:\n${passagesText}\n\nVerify each citation used in the answer.`
-      }
-    ];
-
-    const response = await this.llmService.completion(verifyMessages, {
-      temperature: 0,
-      max_tokens: 1500
-    });
-
-    try {
-      let cleaned = response.replace(/```(?:json)?\s*/gi, "").replace(/```\s*/g, "").trim();
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) return [];
-      const parsed = JSON.parse(jsonMatch[0]);
-
-      // Deduplicate by citation ID — a source is "supported" if ANY usage is supported
-      const byId = new Map<number, { supported: boolean; claims: string[]; reasons: string[] }>();
-      for (const c of (parsed.citations || [])) {
-        const id = Number(c.id);
-        if (!chunkMap.has(id)) continue;
-        const existing = byId.get(id);
-        if (existing) {
-          if (c.supported) existing.supported = true;
-          if (c.claim) existing.claims.push(c.claim);
-          if (c.reason) existing.reasons.push(c.reason);
-        } else {
-          byId.set(id, {
-            supported: !!c.supported,
-            claims: c.claim ? [c.claim] : [],
-            reasons: c.reason ? [c.reason] : [],
-          });
-        }
-      }
-
-      const results: CitationVerification[] = [];
-      for (const [id, entry] of byId) {
-        const chunk = chunkMap.get(id)!;
-        results.push({
-          id,
-          claim: entry.claims.join("; "),
-          supported: entry.supported,
-          reason: entry.supported
-            ? entry.reasons.find(r => r) || "Passage supports the claim"
-            : entry.reasons.filter(r => r).join("; "),
-          sourceChunk: {
-            noteTitle: chunk.metadata.noteTitle,
-            filePath: chunk.metadata.filePath,
-            chunkIndex: chunk.metadata.chunkIndex,
-            content: chunk.content,
-          }
-        });
-      }
-      return results;
-    } catch (e) {
-      console.error("Failed to parse verification response:", e, response);
-      return [];
-    }
-  }
-
   renderCitationBadges(contentEl: HTMLElement, citations: CitationVerification[]) {
     const verificationMap = new Map<number, CitationVerification>();
     for (const c of citations) {
       verificationMap.set(c.id, c);
     }
 
-    const walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT);
+    // "[1]" inside code (e.g. arr[1]) is an index, not a citation
+    const walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) =>
+        node.parentElement?.closest("code, pre") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+    });
     const replacements: { node: Text; fragments: DocumentFragment }[] = [];
 
     while (walker.nextNode()) {
@@ -1309,7 +1242,13 @@ Return ONLY valid JSON in this exact format, no other text:
         }
 
         badge.addEventListener("click", () => {
-          const panel = contentEl.parentElement?.querySelector(`.memex-citation-detail[data-citation-id="${citationId}"]`);
+          const msgDiv = contentEl.parentElement;
+          // The source list starts collapsed; open it so there's something to scroll to
+          const list = msgDiv?.querySelector<HTMLElement>(".memex-citations-panel .citations-list");
+          if (list && list.style.display === "none") {
+            msgDiv!.querySelector<HTMLElement>(".memex-citations-panel .citations-toggle")?.click();
+          }
+          const panel = msgDiv?.querySelector(`.memex-citation-detail[data-citation-id="${citationId}"]`);
           if (panel) {
             panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
             (panel as HTMLElement).style.outline = "2px solid var(--interactive-accent)";
@@ -1383,7 +1322,6 @@ Return ONLY valid JSON in this exact format, no other text:
     const list = panel.createEl("div", { cls: "citations-list" });
     list.style.display = "none";
     list.style.marginTop = "8px";
-    list.style.display = "none";
 
     let expanded = false;
     toggle.addEventListener("click", () => {
@@ -1440,10 +1378,10 @@ Return ONLY valid JSON in this exact format, no other text:
       const contentPreview = item.createEl("div");
       contentPreview.style.opacity = "0.8";
       contentPreview.style.whiteSpace = "pre-wrap";
-      const previewText = citation.sourceChunk.content.length > 200
-        ? citation.sourceChunk.content.substring(0, 200) + "..."
-        : citation.sourceChunk.content;
-      contentPreview.textContent = previewText;
+      // Whole passage, scrollable: a 200-character preview once hid the exact line an answer needed
+      contentPreview.style.maxHeight = "12em";
+      contentPreview.style.overflowY = "auto";
+      contentPreview.textContent = citation.sourceChunk.content;
 
       if (!citation.supported) {
         const reasonEl = item.createEl("div");

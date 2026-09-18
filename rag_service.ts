@@ -374,7 +374,7 @@ Excerpts:
 `;
 
     // Group chunks by file, preserving citation numbers
-    const chunksByFile = new Map<string, { noteTitle: string; entries: { citationNum: number; content: string }[] }>();
+    const chunksByFile = new Map<string, { noteTitle: string; entries: { citationNum: number; chunkIndex: number; content: string }[] }>();
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       const citationNum = i + 1;
@@ -384,12 +384,13 @@ Excerpts:
       if (!chunksByFile.has(filePath)) {
         chunksByFile.set(filePath, { noteTitle: chunk.metadata.noteTitle, entries: [] });
       }
-      chunksByFile.get(filePath)!.entries.push({ citationNum, content: chunk.content });
+      chunksByFile.get(filePath)!.entries.push({ citationNum, chunkIndex: chunk.metadata.chunkIndex, content: chunk.content });
     }
 
     for (const [, { noteTitle, entries }] of chunksByFile) {
       context += `### From: [[${noteTitle}]]\n`;
-      for (const entry of entries) {
+      // Document order reads better than relevance order; each keeps its citation number
+      for (const entry of [...entries].sort((a, b) => a.chunkIndex - b.chunkIndex)) {
         context += `[${entry.citationNum}]:\n${entry.content}\n\n`;
       }
       context += "---\n\n";
