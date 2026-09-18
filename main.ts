@@ -62,7 +62,7 @@ const DEFAULT_SETTINGS: MemexSettings = {
   chunkSize: 200,
   chunkOverlap: 30,
   topK: 6,
-  similarityThreshold: 0.4,
+  similarityThreshold: 0.58,
   autoIndexOnChange: true,
   excludedFolders: ["Templates", ".obsidian"],
   chromaDbPath: ".obsidian/plugins/memex/chromadb",
