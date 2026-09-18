@@ -2,9 +2,9 @@
 	"id": "memex",
 	"name": "Memex",
 	"version": "1.0.0",
-	"minAppVersion": "0.15.0",
-	"description": "An AI-powered knowledge companion for Obsidian — auto-tag notes, summarize your week, extract action items, and chat with your vault using RAG.",
-	"author": "Sketched",
+	"minAppVersion": "1.13.7",
+	"description": "Chat with your notes using AI and get answers grounded in your vault, with cited sources. Also auto-tags notes, extracts action items, and summarizes your week.",
+	"author": "Manas Dalvi",
 	"authorUrl": "https://github.com/manas-33/memex",
 	"isDesktopOnly": false
 }

@@ -13,6 +13,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { App } from "obsidian";
 import { z } from "zod";
 import { DEFAULT_SETTINGS, MemexSettings } from "../settings";
 import { createEmbeddingProvider } from "../providers";
@@ -37,9 +38,12 @@ if (!fs.existsSync(VAULT) || !fs.statSync(VAULT).isDirectory()) {
 const VAULT_REAL = fs.realpathSync(VAULT);
 
 /** Read on every call, so changes made in the plugin's settings apply without a restart. */
+/** The plugin's folder, vault-relative. Assumes the default config folder name. */
+const PLUGIN_DIR = ".obsidian/plugins/memex";
+
 function loadSettings(): MemexSettings {
-  const file = path.join(VAULT, ".obsidian", "plugins", "memex", "data.json");
-  const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+  const file = path.join(VAULT, PLUGIN_DIR, "data.json");
+  const saved = fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, "utf8")) as Partial<MemexSettings>) : {};
   return { ...DEFAULT_SETTINGS, ...saved };
 }
 
@@ -112,7 +116,7 @@ const noteUri = (relPath: string) => `memex://note/${encodeURI(relPath)}`;
 /** fetch-based HTTP for the Qdrant store (the plugin passes Obsidian's requestUrl instead). */
 const fetchHttp: HttpRequest = async ({ url, method, headers, body }) => {
   const res = await fetch(url, { method, headers, body });
-  let json: any = null;
+  let json: unknown = null;
   try {
     json = await res.json();
   } catch {
@@ -133,7 +137,7 @@ const readOnlyVault = {
       },
     },
   },
-} as any;
+} as unknown as App;
 
 let store: IVectorStore | null = null;
 let storeKey = "";
@@ -142,13 +146,14 @@ let loading: Promise<void> | null = null;
 
 /** The index the plugin built, reloaded whenever the plugin rewrites it. */
 async function getStore(settings: MemexSettings): Promise<IVectorStore> {
+  const indexDir = settings.chromaDbPath || `${PLUGIN_DIR}/chromadb`;
   const key = settings.vectorStoreType === "qdrant"
     ? `qdrant|${settings.qdrantUrl}|${settings.qdrantCollection}`
-    : `local|${settings.chromaDbPath}`;
+    : `local|${indexDir}`;
   if (!store || key !== storeKey) {
     store = settings.vectorStoreType === "qdrant"
       ? new QdrantVectorStore(fetchHttp, settings.qdrantUrl, settings.qdrantApiKey, settings.qdrantCollection)
-      : new LocalVectorStore(readOnlyVault, `${settings.chromaDbPath}/vectors.json`);
+      : new LocalVectorStore(readOnlyVault, `${indexDir}/vectors.json`);
     storeKey = key;
     loadedIndexMtime = -1;
   }
@@ -156,7 +161,7 @@ async function getStore(settings: MemexSettings): Promise<IVectorStore> {
   // Qdrant is always current; the local index is a file the plugin rewrites as notes change
   let mtime = 0;
   if (settings.vectorStoreType !== "qdrant") {
-    const file = path.join(VAULT, settings.chromaDbPath, "vectors.json");
+    const file = path.join(VAULT, indexDir, "vectors.json");
     mtime = fs.existsSync(file) ? fs.statSync(file).mtimeMs : 0;
   }
   if (mtime !== loadedIndexMtime) {
@@ -348,4 +353,4 @@ async function main(): Promise<void> {
   console.error(`Memex MCP server ready (vault: ${VAULT})`);
 }
 
-main().catch((error) => fail(`Memex MCP server failed: ${error?.stack || error}`));
+main().catch((error: unknown) => fail(`Memex MCP server failed: ${error instanceof Error ? error.stack : String(error)}`));

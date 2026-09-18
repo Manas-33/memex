@@ -66,7 +66,7 @@ export class EmbeddingService {
 
       // Small delay between batches to avoid rate limiting
       if (i + batchSize < texts.length) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
       }
     }
 

@@ -13,11 +13,22 @@ import {
   App,
 } from "obsidian";
 import { LLMService } from "./llm_service";
-import { ConversationManager, Conversation, Message, CitationVerification } from "./conversation_manager";
-import { RAGContext } from "./rag_service";
+import { ConversationManager, Conversation, ConversationConfig, Message, CitationVerification, isDefaultChatTitle } from "./conversation_manager";
+import { RAGContext, RAGService } from "./rag_service";
 import { SearchResult } from "./vector_store";
-// @ts-ignore
+import { MemexSettings } from "./settings";
+import { confirmAction } from "./confirm_modal";
 import html2pdf from "html2pdf.js";
+
+/** Where "Export to note" saves messages. */
+const EXPORT_FOLDER = "Memex/Exports";
+
+type PdfOptions = Parameters<InstanceType<typeof html2pdf.Worker>["set"]>[0];
+
+/** The attribution checker's JSON reply. */
+interface AttributionReply {
+  sources?: { id?: unknown; used?: boolean; supported?: boolean; claim?: string; reason?: string }[];
+}
 
 export const VIEW_TYPE_CHAT = "memex-chat-view";
 
@@ -28,14 +39,14 @@ export class ChatView extends ItemView {
   private currentConversation: Conversation | null = null;
   private messagesContainer: HTMLElement;
   private sidebarContainer: HTMLElement;
-  private ragService?: any; // RAGService type (using any to avoid circular dependency)
+  private ragService?: RAGService;
 
   constructor(
     leaf: WorkspaceLeaf,
     llmService: LLMService,
     conversationManager: ConversationManager,
-    private settings: any, // Using any to avoid circular dependency or need to export settings interface
-    ragService?: any
+    private settings: MemexSettings,
+    ragService?: RAGService
   ) {
     super(leaf);
     this.llmService = llmService;
@@ -49,7 +60,7 @@ export class ChatView extends ItemView {
   }
 
   getDisplayText() {
-    return "Chat with Journal";
+    return "Chat with journal";
   }
 
   async onOpen() {
@@ -199,7 +210,7 @@ export class ChatView extends ItemView {
 
     const newChatBtn = new ButtonComponent(header);
     newChatBtn.setIcon("plus");
-    newChatBtn.setTooltip("New Chat");
+    newChatBtn.setTooltip("New chat");
     newChatBtn.onClick(async () => {
       await this.createNewConversation();
     });
@@ -246,9 +257,7 @@ export class ChatView extends ItemView {
       titleSpan.style.flex = "1";
       titleSpan.style.marginRight = "5px";
 
-      titleSpan.addEventListener("click", async () => {
-        await this.loadConversation(conv.id);
-      });
+      titleSpan.addEventListener("click", () => void this.loadConversation(conv.id));
 
       // Context Menu for Rename/Delete
       const menuBtn = item.createEl("div", { cls: "conversation-menu-btn" });
@@ -287,7 +296,7 @@ export class ChatView extends ItemView {
             .setIcon("trash")
             .setWarning(true)
             .onClick(async () => {
-               if (confirm("Are you sure you want to delete this chat?")) {
+               if (await confirmAction(this.app, "Delete this chat? This cannot be undone.", "Delete")) {
                    await this.conversationManager.deleteConversation(conv.id);
                    if (this.currentConversation?.id === conv.id) {
                        this.currentConversation = null;
@@ -384,7 +393,7 @@ export class ChatView extends ItemView {
           content.style.lineHeight = "1.6";
           
           // Use MarkdownRenderer
-          await MarkdownRenderer.renderMarkdown(msg.content, content, "", this.component);
+          await MarkdownRenderer.render(this.app, msg.content, content, "", this.component);
           
           // Apply comprehensive styling to all rendered elements
           const allElements = content.querySelectorAll("*");
@@ -461,25 +470,24 @@ export class ChatView extends ItemView {
       }
 
     // Wait a moment for images/rendering to settle
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Increased timeout
+    await new Promise(resolve => window.setTimeout(resolve, 1000));
 
-    console.log("PDF Container Content Length:", contentContainer.innerHTML.length);
       try {
-          const opt = {
+          const opt: PdfOptions = {
             margin: 10,
             filename: `${conversation.title}.pdf`,
             image: { type: 'jpeg', quality: 0.98 },
             html2canvas: { 
                 scale: 2,
                 useCORS: true,
-                logging: true,
+                logging: false,
                 windowWidth: 1200 // Force a desktop width
             },
             jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
           };
 
           // Capture the contentContainer, not the full overlay
-          const pdfData = await html2pdf().from(contentContainer).set(opt as any).output('arraybuffer');
+          const pdfData = (await html2pdf().from(contentContainer).set(opt).output("arraybuffer")) as ArrayBuffer;
           
           const folderPath = "Memex/PDFs";
           if (!await this.app.vault.adapter.exists(folderPath)) {
@@ -538,7 +546,7 @@ export class ChatView extends ItemView {
     // Settings Button
     const settingsBtn = new ButtonComponent(buttonContainer);
     settingsBtn.setIcon("settings");
-    settingsBtn.setTooltip("Chat Settings");
+    settingsBtn.setTooltip("Chat settings");
     settingsBtn.onClick(() => {
         if (this.currentConversation) {
             new ConversationSettingsModal(
@@ -546,7 +554,8 @@ export class ChatView extends ItemView {
                 this.currentConversation, 
                 this.settings,
                 async (newConfig) => {
-                    this.currentConversation!.config = newConfig;
+                    // Merge, so overrides this dialog doesn't edit are kept
+                    this.currentConversation!.config = { ...this.currentConversation!.config, ...newConfig };
                     await this.conversationManager.saveConversation(this.currentConversation!);
                 }
             ).open();
@@ -570,7 +579,7 @@ export class ChatView extends ItemView {
         const content = inputEl.getValue();
         if (!content.trim()) return;
         inputEl.setValue("");
-        this.processUserMessage(content);
+        void this.processUserMessage(content);
       }
     });
   }
@@ -590,12 +599,12 @@ export class ChatView extends ItemView {
       await this.conversationManager.saveConversation(this.currentConversation!);
       this.appendMessage(userMsg);
 
-      // Generate Title if it's the first message and title is "New Chat"
-      if (this.currentConversation!.messages.length === 1 && this.currentConversation!.title === "New Chat") {
+      // Name the chat after its first message
+      if (this.currentConversation!.messages.length === 1 && isDefaultChatTitle(this.currentConversation!.title)) {
           const newTitle = content.substring(0, 30) + (content.length > 30 ? "..." : "");
           this.currentConversation!.title = newTitle;
           await this.conversationManager.saveConversation(this.currentConversation!);
-          this.renderSidebar();
+          await this.renderSidebar();
       }
 
       await this.generateAssistantResponse();
@@ -649,7 +658,6 @@ export class ChatView extends ItemView {
                     max_tokens: 150
                   });
                   ragQuery = ragQuery.trim();
-                  console.log(`RAG: Rewrote query: "${lastUserMessage.content}" → "${ragQuery}"`);
                 } catch (rewriteError) {
                   console.error("Query rewrite failed, using original query:", rewriteError);
                 }
@@ -671,7 +679,6 @@ export class ChatView extends ItemView {
                   content: ragContext.formattedContext
                 });
 
-                console.log(`RAG: Retrieved ${ragContext.retrievedChunks.length} relevant chunks`);
               }
             }
           } catch (error) {
@@ -721,7 +728,7 @@ export class ChatView extends ItemView {
         const renderStream = async () => {
           if (!contentEl) return;
           contentEl.empty();
-          await MarkdownRenderer.renderMarkdown(fullContent, contentEl, "", this.component);
+          await MarkdownRenderer.render(this.app, fullContent, contentEl, "", this.component);
           this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
         };
 
@@ -739,7 +746,7 @@ export class ChatView extends ItemView {
               await renderStream();
             }
           }
-        } catch (streamError: any) {
+        } catch (streamError) {
           // Keep whatever arrived before the failure
           console.error("Streaming error:", streamError);
         }
@@ -765,7 +772,7 @@ export class ChatView extends ItemView {
           // Build baseline sources from all retrieved chunks
           const allChunkIds = [...ragContext.chunkMap.keys()];
           assistantMsg.citations = allChunkIds.map(id => {
-            const chunk = ragContext!.chunkMap.get(id)!;
+            const chunk = ragContext.chunkMap.get(id)!;
             return {
               id,
               claim: "",
@@ -777,7 +784,7 @@ export class ChatView extends ItemView {
                 chunkIndex: chunk.metadata.chunkIndex,
                 content: chunk.content,
               }
-            } as CitationVerification;
+            };
           });
 
           // Post-hoc attribution: check which sources support the answer
@@ -794,7 +801,7 @@ export class ChatView extends ItemView {
             assistantMsg.content = text;
             if (contentEl) {
               contentEl.empty();
-              await MarkdownRenderer.renderMarkdown(text, contentEl, "", this.component);
+              await MarkdownRenderer.render(this.app, text, contentEl, "", this.component);
             }
           };
 
@@ -804,7 +811,7 @@ export class ChatView extends ItemView {
             if (attribution.length > 0) {
               verified = true;
               const attrMap = new Map(attribution.map(a => [a.id, a]));
-              assistantMsg.citations = assistantMsg.citations!.map(c =>
+              assistantMsg.citations = assistantMsg.citations.map(c =>
                 attrMap.has(c.id) ? attrMap.get(c.id)! : c
               );
 
@@ -833,13 +840,13 @@ export class ChatView extends ItemView {
           if (contentEl) {
             const hasInlineCitations = /\[\d+\]/.test(fullContent);
             if (hasInlineCitations) {
-              this.renderCitationBadges(contentEl, assistantMsg.citations!);
+              this.renderCitationBadges(contentEl, assistantMsg.citations);
             }
           }
 
           // Always show the sources panel
           if (contentEl) {
-            this.renderCitationsPanel(contentEl.parentElement!, assistantMsg.citations!);
+            this.renderCitationsPanel(contentEl.parentElement!, assistantMsg.citations);
           }
         }
 
@@ -848,15 +855,15 @@ export class ChatView extends ItemView {
         }
 
         await this.conversationManager.saveConversation(this.currentConversation!);
-        this.renderSidebar();
+        await this.renderSidebar();
 
-      } catch (error: any) {
+      } catch (error) {
         indicator.remove();
         new Notice("Error generating response");
         console.error(error);
         const errorMsg: Message = {
             role: "system",
-            content: `Error: ${error.message || "Unknown error"}`,
+            content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
             timestamp: Date.now()
         };
         this.appendMessage(errorMsg);
@@ -908,7 +915,7 @@ export class ChatView extends ItemView {
     header.style.justifyContent = "space-between";
     header.style.alignItems = "center";
     
-    const roleSpan = header.createEl("span", { text: message.role === "user" ? "You" : "Journal" });
+    header.createEl("span", { text: message.role === "user" ? "You" : "Journal" });
 
     // Timestamp
     const date = new Date(message.timestamp);
@@ -985,7 +992,7 @@ export class ChatView extends ItemView {
         // Export to Note
         menu.addItem((item) => 
             item
-                .setTitle("Export to Note")
+                .setTitle("Export to note")
                 .setIcon("file-plus")
                 .onClick(async () => {
                     await this.exportMessageToNote(message);
@@ -998,23 +1005,24 @@ export class ChatView extends ItemView {
     const content = msgDiv.createEl("div", { cls: "message-content" });
     
     if (message.role === "assistant" || message.role === "system") {
-        const rendered = MarkdownRenderer.renderMarkdown(message.content, content, "", this.component);
-
-        if (message.citations && message.citations.length > 0) {
-          const citations = message.citations;
-          // Badges rewrite the rendered text, so they must wait for rendering to finish
-          rendered.then(() => this.renderCitationBadges(content, citations));
-          this.renderCitationsPanel(msgDiv, citations);
-        }
-
-        if (message.noContextFound) {
-          this.renderNoContextBanner(msgDiv);
-        }
+        void this.renderAssistantMessage(message, msgDiv, content);
     } else {
         content.innerText = message.content;
     }
 
     this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+  }
+
+  /** Renders the Markdown first: citation badges rewrite the rendered text, so they must wait for it. */
+  private async renderAssistantMessage(message: Message, msgDiv: HTMLElement, content: HTMLElement): Promise<void> {
+    await MarkdownRenderer.render(this.app, message.content, content, "", this.component);
+    if (message.citations && message.citations.length > 0) {
+      this.renderCitationBadges(content, message.citations);
+      this.renderCitationsPanel(msgDiv, message.citations);
+    }
+    if (message.noContextFound) {
+      this.renderNoContextBanner(msgDiv);
+    }
   }
 
   editMessage(message: Message, msgDiv: HTMLElement, contentEl: HTMLElement) {
@@ -1031,7 +1039,7 @@ export class ChatView extends ItemView {
       btnContainer.style.marginTop = "5px";
 
       const saveBtn = new ButtonComponent(btnContainer);
-      saveBtn.setButtonText("Save & Submit");
+      saveBtn.setButtonText("Save & submit");
       saveBtn.setCta();
       
       const cancelBtn = new ButtonComponent(btnContainer);
@@ -1096,7 +1104,7 @@ export class ChatView extends ItemView {
   async exportMessageToNote(message: Message) {
       const defaultName = `Chat Export ${new Date().toISOString().replace(/[:.]/g, "-")}`;
       new ExportModal(this.app, defaultName, async (fileName) => {
-          const folderPath = "Memex/Exports";
+          const folderPath = EXPORT_FOLDER;
           if (!await this.app.vault.adapter.exists(folderPath)) {
               await this.app.vault.createFolder(folderPath);
           }
@@ -1155,7 +1163,7 @@ If a source was used but the answer misrepresents it, set "used": true but "supp
       let cleaned = response.replace(/```(?:json)?\s*/gi, "").replace(/```\s*/g, "").trim();
       const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
       if (!jsonMatch) return [];
-      const parsed = JSON.parse(jsonMatch[0]);
+      const parsed = JSON.parse(jsonMatch[0]) as AttributionReply;
 
       const results: CitationVerification[] = [];
       for (const s of (parsed.sources || [])) {
@@ -1252,7 +1260,7 @@ If a source was used but the answer misrepresents it, set "used": true but "supp
           if (panel) {
             panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
             (panel as HTMLElement).style.outline = "2px solid var(--interactive-accent)";
-            setTimeout(() => { (panel as HTMLElement).style.outline = "none"; }, 1500);
+            window.setTimeout(() => { (panel as HTMLElement).style.outline = "none"; }, 1500);
           }
         });
 
@@ -1370,7 +1378,7 @@ If a source was used but the answer misrepresents it, set "used": true but "supp
         statusBadge.style.backgroundColor = "rgba(40, 167, 69, 0.2)";
         statusBadge.style.color = "var(--text-success, #28a745)";
       } else {
-        statusBadge.textContent = "Not Supported";
+        statusBadge.textContent = "Not supported";
         statusBadge.style.backgroundColor = "rgba(220, 53, 69, 0.2)";
         statusBadge.style.color = "var(--text-error, #dc3545)";
       }
@@ -1415,9 +1423,9 @@ If a source was used but the answer misrepresents it, set "used": true but "supp
 
 export class RenameModal extends Modal {
   private currentName: string;
-  private onSubmit: (newName: string) => void;
+  private onSubmit: (newName: string) => Promise<void>;
 
-  constructor(app: App, currentName: string, onSubmit: (newName: string) => void) {
+  constructor(app: App, currentName: string, onSubmit: (newName: string) => Promise<void>) {
     super(app);
     this.currentName = currentName;
     this.onSubmit = onSubmit;
@@ -1425,7 +1433,7 @@ export class RenameModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl("h2", { text: "Rename Chat" });
+    contentEl.createEl("h2", { text: "Rename chat" });
 
     let newName = this.currentName;
 
@@ -1445,7 +1453,7 @@ export class RenameModal extends Modal {
         .setCta()
         .onClick(() => {
           this.close();
-          this.onSubmit(newName);
+          void this.onSubmit(newName);
         })
     );
     
@@ -1457,7 +1465,7 @@ export class RenameModal extends Modal {
         input.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
                 this.close();
-                this.onSubmit(newName);
+                void this.onSubmit(newName);
             }
         });
     }
@@ -1471,9 +1479,9 @@ export class RenameModal extends Modal {
 
 export class ExportModal extends Modal {
   private defaultName: string;
-  private onSubmit: (fileName: string) => void;
+  private onSubmit: (fileName: string) => Promise<void>;
 
-  constructor(app: App, defaultName: string, onSubmit: (fileName: string) => void) {
+  constructor(app: App, defaultName: string, onSubmit: (fileName: string) => Promise<void>) {
     super(app);
     this.defaultName = defaultName;
     this.onSubmit = onSubmit;
@@ -1481,13 +1489,13 @@ export class ExportModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl("h2", { text: "Export to Note" });
-    contentEl.createEl("p", { text: "File will be saved in 'Memex/Exports'" });
+    contentEl.createEl("h2", { text: "Export to note" });
+    contentEl.createEl("p", { text: `File will be saved in '${EXPORT_FOLDER}'` });
 
     let fileName = this.defaultName;
 
     new Setting(contentEl)
-      .setName("Note Name")
+      .setName("Note name")
       .addText((text) =>
         text
           .setValue(this.defaultName)
@@ -1502,7 +1510,7 @@ export class ExportModal extends Modal {
         .setCta()
         .onClick(() => {
           this.close();
-          this.onSubmit(fileName);
+          void this.onSubmit(fileName);
         })
     );
     
@@ -1514,7 +1522,7 @@ export class ExportModal extends Modal {
         input.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
                 this.close();
-                this.onSubmit(fileName);
+                void this.onSubmit(fileName);
             }
         });
     }
@@ -1526,13 +1534,16 @@ export class ExportModal extends Modal {
   }
 }
 
+/** The per-chat settings this dialog edits. */
+type EditableConfig = Required<Pick<ConversationConfig, "systemPrompt" | "temperature" | "maxTokens" | "citationTrustMode">>;
+
 export class ConversationSettingsModal extends Modal {
   private conversation: Conversation;
-  private settings: any;
-  private onSave: (config: any) => void;
-  private tempConfig: any;
+  private settings: MemexSettings;
+  private onSave: (config: ConversationConfig) => Promise<void>;
+  private tempConfig: EditableConfig;
 
-  constructor(app: App, conversation: Conversation, settings: any, onSave: (config: any) => void) {
+  constructor(app: App, conversation: Conversation, settings: MemexSettings, onSave: (config: ConversationConfig) => Promise<void>) {
     super(app);
     this.conversation = conversation;
     this.settings = settings;
@@ -1542,25 +1553,25 @@ export class ConversationSettingsModal extends Modal {
         systemPrompt: conversation.config?.systemPrompt || settings.personas[0]?.prompt || "",
         temperature: conversation.config?.temperature ?? settings.defaultTemperature,
         maxTokens: conversation.config?.maxTokens ?? settings.defaultMaxTokens,
-        citationTrustMode: conversation.config?.citationTrustMode ?? settings.citationTrustMode ?? "relaxed"
+        citationTrustMode: conversation.config?.citationTrustMode ?? settings.citationTrustMode
     };
   }
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl("h2", { text: "Chat Settings" });
+    contentEl.createEl("h2", { text: "Chat settings" });
 
     // Persona Selector
     new Setting(contentEl)
         .setName("Persona")
         .setDesc("Select a preset persona")
         .addDropdown(dropdown => {
-            this.settings.personas.forEach((p: any) => {
+            this.settings.personas.forEach((p) => {
                 dropdown.addOption(p.name, p.name);
             });
             dropdown.setValue("Custom"); // Default to showing current prompt
             dropdown.onChange((value) => {
-                const persona = this.settings.personas.find((p: any) => p.name === value);
+                const persona = this.settings.personas.find((p) => p.name === value);
                 if (persona) {
                     this.tempConfig.systemPrompt = persona.prompt;
                     // Update the text area below
@@ -1572,7 +1583,7 @@ export class ConversationSettingsModal extends Modal {
 
     // System Prompt
     new Setting(contentEl)
-        .setName("System Prompt")
+        .setName("System prompt")
         .setDesc("Customize the behavior of the assistant")
         .addTextArea(text => text
             .setValue(this.tempConfig.systemPrompt)
@@ -1595,7 +1606,7 @@ export class ConversationSettingsModal extends Modal {
 
     // Max Tokens
     new Setting(contentEl)
-        .setName("Max Tokens")
+        .setName("Max tokens")
         .setDesc("Maximum length of response")
         .addText(text => text
             .setValue(String(this.tempConfig.maxTokens))
@@ -1608,7 +1619,7 @@ export class ConversationSettingsModal extends Modal {
 
     // Citation Trust Mode
     new Setting(contentEl)
-        .setName("Citation Trust Mode")
+        .setName("Citation trust mode")
         .setDesc("Controls citation verification for this chat")
         .addDropdown(dropdown => dropdown
             .addOption("off", "Off")
@@ -1616,7 +1627,7 @@ export class ConversationSettingsModal extends Modal {
             .addOption("strict", "Strict")
             .setValue(this.tempConfig.citationTrustMode)
             .onChange((value) => {
-                this.tempConfig.citationTrustMode = value;
+                this.tempConfig.citationTrustMode = value as EditableConfig["citationTrustMode"];
             }));
 
     new Setting(contentEl).addButton((btn) =>
@@ -1624,7 +1635,7 @@ export class ConversationSettingsModal extends Modal {
         .setButtonText("Save")
         .setCta()
         .onClick(() => {
-          this.onSave(this.tempConfig);
+          void this.onSave(this.tempConfig);
           this.close();
         })
     );

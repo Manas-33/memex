@@ -1,4 +1,4 @@
-import { App, TFile, normalizePath } from "obsidian";
+import { App } from "obsidian";
 
 export interface CitationVerification {
   id: number;
@@ -13,6 +13,13 @@ export interface CitationVerification {
   };
 }
 
+export const DEFAULT_CHAT_TITLE = "New chat";
+
+/** True for a chat that hasn't been named yet, including ones saved as "New Chat" by older versions. */
+export function isDefaultChatTitle(title: string): boolean {
+  return title.toLowerCase() === DEFAULT_CHAT_TITLE.toLowerCase();
+}
+
 export interface Message {
   role: "system" | "user" | "assistant";
   content: string;
@@ -22,19 +29,22 @@ export interface Message {
   noContextFound?: boolean;
 }
 
+/** Per-chat overrides of the plugin-wide settings. */
+export interface ConversationConfig {
+  systemPrompt?: string;
+  temperature?: number;
+  maxTokens?: number;
+  ragEnabled?: boolean;
+  topK?: number;
+  similarityThreshold?: number;
+  citationTrustMode?: "off" | "relaxed" | "strict";
+}
+
 export interface Conversation {
   id: string;
   title: string;
   messages: Message[];
-  config?: {
-      systemPrompt?: string;
-      temperature?: number;
-      maxTokens?: number;
-      ragEnabled?: boolean;
-      topK?: number;
-      similarityThreshold?: number;
-      citationTrustMode?: "off" | "relaxed" | "strict";
-  };
+  config?: ConversationConfig;
   createdAt: number;
   updatedAt: number;
 }
@@ -54,7 +64,7 @@ export class ConversationManager {
     }
   }
 
-  async createConversation(title: string = "New Chat"): Promise<Conversation> {
+  async createConversation(title: string = DEFAULT_CHAT_TITLE): Promise<Conversation> {
     const id = crypto.randomUUID();
     const conversation: Conversation = {
       id,
@@ -83,7 +93,7 @@ export class ConversationManager {
     const filePath = `${this.conversationsPath}/${id}.json`;
     if (await this.app.vault.adapter.exists(filePath)) {
       const content = await this.app.vault.adapter.read(filePath);
-      return JSON.parse(content);
+      return JSON.parse(content) as Conversation;
     }
     return null;
   }
@@ -100,7 +110,7 @@ export class ConversationManager {
       if (filePath.endsWith(".json")) {
         try {
           const content = await this.app.vault.adapter.read(filePath);
-          const conversation = JSON.parse(content);
+          const conversation = JSON.parse(content) as Conversation;
           conversations.push(conversation);
         } catch (e) {
           console.error(`Failed to load conversation ${filePath}`, e);

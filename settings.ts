@@ -67,8 +67,10 @@ export const DEFAULT_SETTINGS: MemexSettings = {
   similarityThreshold: 0.58,
   retrievalMode: "hybrid",
   autoIndexOnChange: true,
-  excludedFolders: ["Templates", ".obsidian"],
-  chromaDbPath: ".obsidian/plugins/memex/chromadb",
+  // Obsidian never indexes its own config folder, so it doesn't need listing here
+  excludedFolders: ["Templates"],
+  // Empty means "inside this plugin's own folder" (the config folder can be renamed)
+  chromaDbPath: "",
   vectorStoreType: "local",
   qdrantUrl: "http://localhost:6333",
   qdrantApiKey: "",

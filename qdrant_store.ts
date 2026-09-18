@@ -11,7 +11,7 @@ export type HttpRequest = (req: {
   method: string;
   headers: Record<string, string>;
   body?: string;
-}) => Promise<{ status: number; json: any }>;
+}) => Promise<{ status: number; json: unknown }>;
 
 /** What's stored alongside each vector: the chunk, minus its embedding. */
 interface ChunkPayload {
@@ -22,6 +22,22 @@ interface ChunkPayload {
   totalChunks: number;
   noteTitle: string;
   timestamp: number;
+}
+
+/** The parts of Qdrant's REST responses this store reads. */
+interface QdrantEnvelope<T> {
+  result?: T;
+  status?: { error?: string } | string;
+}
+interface ScrollResult {
+  points: { id: string | number; payload: ChunkPayload }[];
+  next_page_offset?: string | number | null;
+}
+interface QueryResult {
+  points: { id: string | number; score: number; payload?: ChunkPayload }[];
+}
+interface CountResult {
+  count: number;
 }
 
 /** Qdrant answered 404: the collection is gone, e.g. another device cleared the index. */
@@ -71,17 +87,18 @@ export class QdrantVectorStore implements IVectorStore {
   }
 
   /** Like `request`, but throws on an error status and returns the `result` field. */
-  private async call(method: string, path: string, body?: unknown): Promise<any> {
+  private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await this.request(method, path, body);
     if (res.status === 404) {
       this.forgetCollection();
       throw new CollectionMissingError(`Qdrant collection "${this.collection}" does not exist`);
     }
     if (res.status >= 400) {
-      const detail = res.json?.status?.error ?? JSON.stringify(res.json);
+      const status = (res.json as QdrantEnvelope<T> | null)?.status;
+      const detail = (typeof status === "object" && status?.error) || JSON.stringify(res.json);
       throw new Error(`Qdrant ${method} ${path} failed (${res.status}): ${detail}`);
     }
-    return res.json?.result;
+    return (res.json as QdrantEnvelope<T> | null)?.result as T;
   }
 
   private get collectionPath(): string {
@@ -95,7 +112,6 @@ export class QdrantVectorStore implements IVectorStore {
     this.docIdByPoint.clear();
     this.lexicalDirty = true;
     await this.refreshCollectionState();
-    console.log(`Qdrant Store: ${this.collectionExists ? `loaded ${this.chunks.size} chunks` : "collection not created yet"}`);
   }
 
   /** Re-checks whether the collection exists (another device may have created it) and loads its text. */
@@ -156,14 +172,14 @@ export class QdrantVectorStore implements IVectorStore {
     this.docIdByPoint.clear();
     let offset: unknown = null;
     do {
-      const result = await this.call("POST", `${this.collectionPath}/points/scroll`, {
+      const result = await this.call<ScrollResult>("POST", `${this.collectionPath}/points/scroll`, {
         limit: 256,
         with_payload: true,
         with_vector: false,
         ...(offset !== null ? { offset } : {}),
       });
       for (const point of result.points) {
-        this.remember(String(point.id), point.payload as ChunkPayload);
+        this.remember(String(point.id), point.payload);
       }
       offset = result.next_page_offset ?? null;
     } while (offset !== null);
@@ -242,14 +258,14 @@ export class QdrantVectorStore implements IVectorStore {
     similarityThreshold: number = 0.7
   ): Promise<SearchResult[]> {
     return this.orEmpty<SearchResult[]>([], async () => {
-      const result = await this.call("POST", `${this.collectionPath}/points/query`, {
+      const result = await this.call<QueryResult>("POST", `${this.collectionPath}/points/query`, {
         query: queryEmbedding,
         limit: topK,
         score_threshold: similarityThreshold,
         with_payload: true,
       });
       return result.points
-        .map((p: any) => toResult(p.payload as ChunkPayload, p.score))
+        .map((p) => toResult(p.payload as ChunkPayload, p.score))
         .sort((a: SearchResult, b: SearchResult) => b.similarity - a.similarity || (a.id < b.id ? -1 : 1));
     });
   }
@@ -294,18 +310,21 @@ export class QdrantVectorStore implements IVectorStore {
   }
 
   private async denseScores(queryEmbedding: number[]): Promise<{ id: string; score: number }[]> {
-    const result = await this.call("POST", `${this.collectionPath}/points/query`, {
+    const result = await this.call<QueryResult>("POST", `${this.collectionPath}/points/query`, {
       query: queryEmbedding,
       limit: MAX_CANDIDATES,
       with_payload: false,
     });
-    return result.points.map((p: any) => ({ id: String(p.id), score: p.score }));
+    return result.points.map((p) => ({ id: String(p.id), score: p.score }));
   }
+
+  /** Writes go to Qdrant synchronously (wait=true), so there is never anything pending. */
+  async flush(): Promise<void> {}
 
   async getCount(): Promise<number> {
     return this.orEmpty(0, async () => {
-      const result = await this.call("POST", `${this.collectionPath}/points/count`, { exact: true });
-      return result.count as number;
+      const result = await this.call<CountResult>("POST", `${this.collectionPath}/points/count`, { exact: true });
+      return result.count;
     });
   }
 }

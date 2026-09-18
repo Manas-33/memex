@@ -42,6 +42,8 @@ export interface IVectorStore {
   ): Promise<SearchResult[]>;
   clearAll(): Promise<void>;
   getCount(): Promise<number>;
+  /** Persists any pending writes now, e.g. before the plugin unloads. */
+  flush(): Promise<void>;
 }
 
 interface VectorStoreData {
@@ -66,7 +68,7 @@ export class LocalVectorStore implements IVectorStore {
   private pathIndex: Map<string, Set<string>> = new Map();
   private dbPath: string;
   private app: App;
-  private saveTimeout: NodeJS.Timeout | null = null;
+  private saveTimeout: number | null = null;
   private lexical = new LexicalIndex();
   /** Set whenever documents change; the keyword index is rebuilt lazily on the next hybrid search. */
   private lexicalDirty = true;
@@ -92,7 +94,7 @@ export class LocalVectorStore implements IVectorStore {
       // Load existing data if available
       if (await this.app.vault.adapter.exists(this.dbPath)) {
         const data = await this.app.vault.adapter.read(this.dbPath);
-        const storeData: VectorStoreData = JSON.parse(data);
+        const storeData = JSON.parse(data) as VectorStoreData;
         
         // Rebuild the maps from loaded documents
         this.documents.clear();
@@ -101,9 +103,6 @@ export class LocalVectorStore implements IVectorStore {
           this.addToIndex(doc);
         }
         
-        console.log(`Vector Store: Loaded ${this.documents.size} documents from disk`);
-      } else {
-        console.log("Vector Store: Initialized empty store");
       }
     } catch (error) {
       console.error("Failed to initialize Vector Store:", error);
@@ -188,32 +187,40 @@ export class LocalVectorStore implements IVectorStore {
    * Save the vector store to disk (debounced).
    * Uses compact JSON (no pretty-printing) to reduce file size ~40%.
    */
-  private async saveToDisk(): Promise<void> {
-    // Debounce saves to avoid excessive writes
-    if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
+  private scheduleSave(): void {
+    // Debounce saves to avoid excessive writes. Writes only ever happen inside Obsidian:
+    // the MCP server opens this store read-only, so window timers are safe here.
+    if (this.saveTimeout !== null) {
+      window.clearTimeout(this.saveTimeout);
     }
+    this.saveTimeout = window.setTimeout(() => void this.writeToDisk(), 1000);
+  }
 
-    this.saveTimeout = setTimeout(async () => {
-      try {
-        const docs: VectorDocument[] = [];
-        for (const indexed of this.documents.values()) {
-          docs.push(indexed.doc);
-        }
+  async flush(): Promise<void> {
+    if (this.saveTimeout === null) return;
+    window.clearTimeout(this.saveTimeout);
+    await this.writeToDisk();
+  }
 
-        const storeData: VectorStoreData = {
-          documents: docs,
-          version: "1.0",
-        };
-
-        // Compact JSON — no pretty-printing (saves ~40% disk space for embedding arrays)
-        const data = JSON.stringify(storeData);
-        await this.app.vault.adapter.write(this.dbPath, data);
-        console.log(`Vector Store: Saved ${this.documents.size} documents to disk`);
-      } catch (error) {
-        console.error("Failed to save Vector Store:", error);
+  private async writeToDisk(): Promise<void> {
+    this.saveTimeout = null;
+    try {
+      const docs: VectorDocument[] = [];
+      for (const indexed of this.documents.values()) {
+        docs.push(indexed.doc);
       }
-    }, 1000);
+
+      const storeData: VectorStoreData = {
+        documents: docs,
+        version: "1.0",
+      };
+
+      // Compact JSON — no pretty-printing (saves ~40% disk space for embedding arrays)
+      const data = JSON.stringify(storeData);
+      await this.app.vault.adapter.write(this.dbPath, data);
+    } catch (error) {
+      console.error("Failed to save Vector Store:", error);
+    }
   }
 
   // ─── CRUD Operations ─────────────────────────────────────────────────────────
@@ -230,8 +237,7 @@ export class LocalVectorStore implements IVectorStore {
       this.addToIndex(doc);
     }
 
-    await this.saveToDisk();
-    console.log(`Vector Store: Added ${documents.length} documents`);
+    this.scheduleSave();
   }
 
   /**
@@ -247,8 +253,7 @@ export class LocalVectorStore implements IVectorStore {
       this.addToIndex(doc);
     }
 
-    await this.saveToDisk();
-    console.log(`Vector Store: Updated ${documents.length} documents`);
+    this.scheduleSave();
   }
 
   /**
@@ -261,15 +266,13 @@ export class LocalVectorStore implements IVectorStore {
       return;
     }
 
-    const count = ids.size;
     // Copy the set since removeFromIndex mutates it
     const idsCopy = [...ids];
     for (const id of idsCopy) {
       this.removeFromIndex(id);
     }
 
-    await this.saveToDisk();
-    console.log(`Vector Store: Deleted ${count} documents for ${filePath}`);
+    this.scheduleSave();
   }
 
   // ─── Search ──────────────────────────────────────────────────────────────────
@@ -374,8 +377,8 @@ export class LocalVectorStore implements IVectorStore {
   /**
    * Min-heap bubble up: maintain heap property after insertion
    */
-  private heapBubbleUp(
-    heap: Array<{ similarity: number; [key: string]: any }>
+  private heapBubbleUp<T extends { similarity: number }>(
+    heap: T[]
   ): void {
     let i = heap.length - 1;
     while (i > 0) {
@@ -392,8 +395,8 @@ export class LocalVectorStore implements IVectorStore {
   /**
    * Min-heap bubble down: maintain heap property after replacement at root
    */
-  private heapBubbleDown(
-    heap: Array<{ similarity: number; [key: string]: any }>
+  private heapBubbleDown<T extends { similarity: number }>(
+    heap: T[]
   ): void {
     let i = 0;
     const n = heap.length;
@@ -436,8 +439,7 @@ export class LocalVectorStore implements IVectorStore {
     this.documents.clear();
     this.pathIndex.clear();
     this.lexicalDirty = true;
-    await this.saveToDisk();
-    console.log("Vector Store: Cleared all documents");
+    this.scheduleSave();
   }
 
   /** Every stored document, for moving the index to another store. */

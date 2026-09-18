@@ -35,6 +35,22 @@ cp main.js manifest.json <your-vault>/.obsidian/plugins/memex/
 
 ---
 
+## 🔒 Privacy & network use
+
+Memex sends data only to the services you configure, and collects no telemetry.
+
+| Service | Used when | What is sent |
+|---|---|---|
+| **Google Gemini API** — if you choose the Gemini provider | Chatting, indexing, note commands | Your chat messages, the note excerpts retrieved as context, and, when indexing, the text of every note outside your excluded folders (to create embeddings). *Auto-tag*, *Extract action items* and *Generate weekly summary* send the notes they process. Covered by the [Gemini API terms](https://ai.google.dev/gemini-api/terms). |
+| **Local LLM server** — LM Studio / Ollama, if you choose the local provider | Same as above | Sent to the endpoint you configure. The default is `http://localhost:1234`, so nothing leaves your machine. |
+| **Qdrant** — optional, if you set *Vector store* to Qdrant | Indexing and searching | Note chunks and their embeddings, stored in the Qdrant instance you configure (local or Qdrant Cloud). |
+
+No account is required: Memex works fully with a local LLM server. Gemini needs a Google API key, and a shared index needs a Qdrant instance (Qdrant Cloud requires an account).
+
+Stored inside your vault: chat history (`.memex/conversations/`), the search index (the plugin's folder), and your settings, **including API keys in plain text** in the plugin's `data.json`. Keep that in mind if you sync or share your vault.
+
+---
+
 ## ✨ Features
 
 ### 💬 Chat with Your Vault
@@ -46,7 +62,7 @@ cp main.js manifest.json <your-vault>/.obsidian/plugins/memex/
   - **Edit & re-submit** a user message (trims history and re-generates).
   - **Regenerate** an assistant response.
   - **Delete** a single message.
-  - **Export to Note** — saves a message as a new Markdown file in your vault.
+  - **Export to note** — saves a message as a new Markdown file in your vault.
 - **Per-conversation settings** — override temperature, max tokens, system prompt, RAG top-K, and similarity threshold on a per-chat basis via the ⚙️ button.
 - **Personas** — switch the assistant's personality (e.g., *Zettelkasten Guide*, *Daily Reflector*, *Concise Summarizer*). Fully customisable in settings.
 - **PDF export** — right-click a chat in the sidebar → *Export to PDF*. Renders full Markdown with styled headings, code blocks, and lists into an A4 PDF saved to `Memex/PDFs/`.
@@ -54,7 +70,10 @@ cp main.js manifest.json <your-vault>/.obsidian/plugins/memex/
 ### 🔎 RAG (Retrieval-Augmented Generation)
 - **Intelligent query rewriting** — follow-up questions are automatically rewritten into standalone search queries using the LLM, so context isn't lost across turns.
 - **Content-hash indexing** — only re-embeds notes whose content has actually changed; hashes are persisted to disk across reloads, eliminating redundant API calls.
-- **Idle-based auto-indexing** — dirty files are queued and re-indexed when you navigate away from a note (not on every keystroke).
+- **Deferred re-indexing** — edited notes are queued and re-indexed when you switch to another note, not on every keystroke.
+- **Hybrid search** — keyword (BM25) matching fused with semantic search via Reciprocal Rank Fusion, so exact names and terms are found as well as related ideas.
+- **Grounded answers** — the assistant cites the notes it used, and says so when nothing in your vault is relevant enough, instead of answering from general knowledge.
+- **Optional shared index** — keep the index in [Qdrant](https://qdrant.tech) (local or Qdrant Cloud) so every device uses the same one.
 - **Optimised vector store**:
   - `Float32Array` embeddings with pre-computed norms for ~2–3× faster cosine similarity.
   - Min-heap top-K search — avoids sorting the entire index.
@@ -123,17 +142,18 @@ Open the Command Palette (`Cmd/Ctrl + P`) and search for **Memex**:
 
 | Command | Description |
 |---------|-------------|
-| **Open Chat with Journal** | Opens the chat sidebar |
-| **Auto Tag Current Note** | Analyses the note and prepends tags |
-| **Extract Action Items** | Finds TODOs and appends a checklist |
-| **Generate Weekly Summary** | Summarises the last 7 days of notes |
-| **Index Vault for RAG** | Full vault embedding index (with progress) |
-| **Clear RAG Index** | Wipes the index for a fresh rebuild |
-| **View RAG Index Statistics** | Shows total indexed document chunks |
-| **Debug RAG Retrieval** | Select text → retrieves matching chunks (logged to console) |
+| **Open chat with journal** | Opens the chat sidebar |
+| **Auto-tag current note** | Analyses the note and prepends tags |
+| **Extract action items** | Finds TODOs and appends a checklist |
+| **Generate weekly summary** | Summarises the last 7 days of notes |
+| **Index vault for RAG** | Full vault embedding index (with progress) |
+| **Clear RAG index** | Wipes the index for a fresh rebuild |
+| **View RAG index statistics** | Shows total indexed document chunks |
+| **Upload local index to Qdrant** | Copies the existing index to Qdrant, reusing its embeddings |
+| **Debug RAG retrieval** | Select text → shows the best-matching notes and their scores |
 
 ### Chat Interface
-- Click the **💬 ribbon icon** or run the *Open Chat with Journal* command.
+- Click the **💬 ribbon icon** or run the *Open chat with journal* command.
 - Type a message and press **Enter** (or **Shift+Enter** for a new line).
 - Use the **⚙️** button next to Send to adjust per-chat settings.
 - Right-click a conversation in the sidebar for rename / export / delete options.

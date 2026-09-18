@@ -29,8 +29,8 @@ export async function requestUrl(request: RequestUrlParam | string) {
   return {
     status: res.status,
     text,
-    get json() {
-      return JSON.parse(text);
+    get json(): unknown {
+      return JSON.parse(text) as unknown;
     },
   };
 }

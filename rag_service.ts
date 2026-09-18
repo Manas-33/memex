@@ -1,5 +1,5 @@
-import { App, TFile, TAbstractFile, Notice } from "obsidian";
-import { EmbeddingService, DocumentChunk } from "./embedding_service";
+import { App, Component, TFile, TAbstractFile } from "obsidian";
+import { EmbeddingService } from "./embedding_service";
 import { IVectorStore, VectorDocument, SearchResult } from "./vector_store";
 
 export interface RAGContext {
@@ -12,7 +12,11 @@ export interface RAGContext {
 
 export type RetrievalMode = "vector" | "hybrid";
 
-export class RAGService {
+/**
+ * A Component so it can be added as a child of the plugin: Obsidian then removes its
+ * file watchers and calls onunload() (which flushes pending writes) when the plugin unloads.
+ */
+export class RAGService extends Component {
   private app: App;
   private embeddingService: EmbeddingService;
   private vectorStore: IVectorStore;
@@ -25,7 +29,7 @@ export class RAGService {
   /** Set of file paths that have been modified but not yet re-indexed */
   private dirtyFiles: Set<string> = new Set();
   /** Debounce timer for saving content hashes */
-  private saveHashesTimer: NodeJS.Timeout | null = null;
+  private saveHashesTimer: number | null = null;
   private static readonly SAVE_HASHES_DEBOUNCE_MS = 2000;
 
   constructor(
@@ -36,6 +40,7 @@ export class RAGService {
     excludedFolders: string[] = [],
     autoIndexOnChange: boolean = true
   ) {
+    super();
     this.app = app;
     this.embeddingService = embeddingService;
     this.vectorStore = vectorStore;
@@ -49,11 +54,12 @@ export class RAGService {
       await this.vectorStore.initialize();
       await this.loadContentHashes();
       this.isInitialized = true;
-      console.log("RAG Service initialized");
 
       // Set up file watchers if auto-indexing is enabled
       if (this.autoIndexOnChange) {
-        this.setupFileWatchers();
+        // Vault "create" events also fire for every existing file while the vault
+        // loads; waiting for the layout means only genuinely new notes get indexed
+        this.app.workspace.onLayoutReady(() => this.setupFileWatchers());
       }
     } catch (error) {
       console.error("Failed to initialize RAG Service:", error);
@@ -69,9 +75,8 @@ export class RAGService {
       const adapter = this.app.vault.adapter;
       if (await adapter.exists(this.contentHashesPath)) {
         const data = await adapter.read(this.contentHashesPath);
-        const hashes = JSON.parse(data);
+        const hashes = JSON.parse(data) as Record<string, string>;
         this.contentHashes = new Map(Object.entries(hashes));
-        console.log(`Loaded ${this.contentHashes.size} content hashes from disk`);
       }
     } catch (error) {
       console.error("Failed to load content hashes:", error);
@@ -83,20 +88,29 @@ export class RAGService {
    * Save content hashes to disk (debounced to avoid excessive writes)
    */
   private saveContentHashes(): void {
-    if (this.saveHashesTimer) {
-      clearTimeout(this.saveHashesTimer);
+    if (this.saveHashesTimer !== null) {
+      window.clearTimeout(this.saveHashesTimer);
     }
+    this.saveHashesTimer = window.setTimeout(() => void this.writeContentHashes(), RAGService.SAVE_HASHES_DEBOUNCE_MS);
+  }
 
-    this.saveHashesTimer = setTimeout(async () => {
-      try {
-        const adapter = this.app.vault.adapter;
-        const hashes = Object.fromEntries(this.contentHashes);
-        await adapter.write(this.contentHashesPath, JSON.stringify(hashes));
-        console.log(`Saved ${this.contentHashes.size} content hashes to disk`);
-      } catch (error) {
-        console.error("Failed to save content hashes:", error);
-      }
-    }, RAGService.SAVE_HASHES_DEBOUNCE_MS);
+  private async writeContentHashes(): Promise<void> {
+    this.saveHashesTimer = null;
+    try {
+      const hashes = Object.fromEntries(this.contentHashes);
+      await this.app.vault.adapter.write(this.contentHashesPath, JSON.stringify(hashes));
+    } catch (error) {
+      console.error("Failed to save content hashes:", error);
+    }
+  }
+
+  /** Writes anything still pending, so a quick disable doesn't lose the last index changes. */
+  onunload(): void {
+    if (this.saveHashesTimer !== null) {
+      window.clearTimeout(this.saveHashesTimer);
+      void this.writeContentHashes();
+    }
+    void this.vectorStore.flush();
   }
 
   /**
@@ -116,44 +130,41 @@ export class RAGService {
    */
   private setupFileWatchers(): void {
     // Watch for file modifications – just mark as dirty, no API calls yet
-    this.app.vault.on("modify", (file: TAbstractFile) => {
+    this.registerEvent(this.app.vault.on("modify", (file: TAbstractFile) => {
       if (file instanceof TFile && file.extension === "md") {
         if (!this.shouldIndexFile(file.path)) {
           return;
         }
         this.dirtyFiles.add(file.path);
       }
-    });
+    }));
 
     // Re-index dirty files when the user switches away from a note
-    this.app.workspace.on("active-leaf-change", async () => {
+    this.registerEvent(this.app.workspace.on("active-leaf-change", async () => {
       await this.flushDirtyFiles();
-    });
+    }));
 
     // Watch for file creation
-    this.app.vault.on("create", async (file) => {
+    this.registerEvent(this.app.vault.on("create", async (file) => {
       if (file instanceof TFile && file.extension === "md") {
         if (!this.shouldIndexFile(file.path)) {
           return;
         }
-        console.log(`Auto-indexing new file: ${file.path}`);
         await this.indexFile(file);
       }
-    });
+    }));
 
     // Watch for file deletion
-    this.app.vault.on("delete", async (file) => {
+    this.registerEvent(this.app.vault.on("delete", async (file) => {
       if (file instanceof TFile && file.extension === "md") {
-        console.log(`Removing deleted file from index: ${file.path}`);
         this.contentHashes.delete(file.path);
         await this.vectorStore.deleteDocumentsByPath(file.path);
       }
-    });
+    }));
 
     // Watch for file rename
-    this.app.vault.on("rename", async (file, oldPath) => {
+    this.registerEvent(this.app.vault.on("rename", async (file, oldPath) => {
       if (file instanceof TFile && file.extension === "md") {
-        console.log(`Updating index for renamed file: ${oldPath} -> ${file.path}`);
         // Clean up old entries and hash
         this.contentHashes.delete(oldPath);
         await this.vectorStore.deleteDocumentsByPath(oldPath);
@@ -162,7 +173,7 @@ export class RAGService {
           await this.indexFile(file);
         }
       }
-    });
+    }));
   }
 
   /**
@@ -219,13 +230,11 @@ export class RAGService {
       const previousHash = this.contentHashes.get(file.path);
 
       if (previousHash === contentHash) {
-        console.log(`Skipping unchanged file: ${file.path}`);
         return;
       }
 
       // ── Skip empty or whitespace-only files ────────────────────────────
       if (content.trim().length === 0) {
-        console.log(`Skipping empty file: ${file.path}`);
         // Still update hash so we don't retry empty files
         this.contentHashes.set(file.path, contentHash);
         this.saveContentHashes();
@@ -240,7 +249,6 @@ export class RAGService {
       );
 
       if (chunks.length === 0) {
-        console.log(`No content to index for ${file.path}`);
         // Still update hash so we don't retry empty files
         this.contentHashes.set(file.path, contentHash);
         return;
@@ -268,7 +276,6 @@ export class RAGService {
       this.contentHashes.set(file.path, contentHash);
       this.saveContentHashes();
 
-      console.log(`Indexed ${chunks.length} chunks for ${file.path}`);
     } catch (error) {
       // Old embeddings are preserved since we only delete after success
       console.error(`Failed to index file ${file.path}:`, error);
@@ -287,7 +294,6 @@ export class RAGService {
     const files = this.app.vault.getMarkdownFiles();
     const filesToIndex = files.filter((file) => this.shouldIndexFile(file.path));
 
-    console.log(`Indexing ${filesToIndex.length} files...`);
 
     for (let i = 0; i < filesToIndex.length; i++) {
       const file = filesToIndex[i];
@@ -302,7 +308,6 @@ export class RAGService {
       }
     }
 
-    console.log("Vault indexing complete");
   }
 
   /**
@@ -410,7 +415,6 @@ Excerpts:
     }
 
     await this.vectorStore.clearAll();
-    console.log("Index cleared");
   }
 
   /**

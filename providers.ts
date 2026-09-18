@@ -2,6 +2,17 @@ import { requestUrl, RequestUrlParam } from "obsidian";
 
 // ─── SSE Stream Parser ───────────────────────────────────────────────────────
 
+/** The parts of OpenAI-compatible responses this plugin reads. */
+interface ChatCompletionResponse {
+  choices: { message: { content: string } }[];
+}
+interface ChatCompletionChunk {
+  choices?: { delta?: { content?: string } }[];
+}
+interface EmbeddingResponse {
+  data: { embedding: number[] }[];
+}
+
 async function* parseSSEStream(
   body: ReadableStream<Uint8Array>
 ): AsyncGenerator<string, void, unknown> {
@@ -27,7 +38,7 @@ async function* parseSSEStream(
         if (data === "[DONE]") return;
 
         try {
-          const parsed = JSON.parse(data);
+          const parsed = JSON.parse(data) as ChatCompletionChunk;
           const content = parsed.choices?.[0]?.delta?.content;
           if (content) {
             yield content;
@@ -115,7 +126,7 @@ export class LocalLLMProvider implements ILLMProvider {
     };
 
     const response = await requestUrl(params);
-    return response.json.choices[0].message.content;
+    return (response.json as ChatCompletionResponse).choices[0].message.content;
   }
 
   async *streamCompletion(
@@ -168,7 +179,7 @@ export class LocalEmbeddingProvider implements IEmbeddingProvider {
     };
 
     const response = await requestUrl(params);
-    return response.json.data[0].embedding;
+    return (response.json as EmbeddingResponse).data[0].embedding;
   }
 
   updateConfig(config: EmbeddingProviderConfig): void {
@@ -210,7 +221,7 @@ export class GeminiLLMProvider implements ILLMProvider {
     };
 
     const response = await requestUrl(params);
-    return response.json.choices[0].message.content;
+    return (response.json as ChatCompletionResponse).choices[0].message.content;
   }
 
   async *streamCompletion(
@@ -269,7 +280,7 @@ export class GeminiEmbeddingProvider implements IEmbeddingProvider {
     };
 
     const response = await requestUrl(params);
-    return response.json.data[0].embedding;
+    return (response.json as EmbeddingResponse).data[0].embedding;
   }
 
   updateConfig(config: EmbeddingProviderConfig): void {

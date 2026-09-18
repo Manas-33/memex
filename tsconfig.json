@@ -22,7 +22,6 @@
         "**/*.ts"
     ],
     "exclude": [
-        "node_modules",
-        "mcp"
+        "node_modules"
     ]
 }

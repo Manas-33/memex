@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, WorkspaceLeaf, Notice, MarkdownView, Editor, requestUrl } from "obsidian";
+import { App, Plugin, PluginSettingTab, Setting, WorkspaceLeaf, Notice, MarkdownView, Editor, requestUrl, normalizePath } from "obsidian";
 import { LLMService } from "./llm_service";
 import { Processor } from "./processor";
 import { ChatView, VIEW_TYPE_CHAT } from "./chat_view";
@@ -9,6 +9,12 @@ import { HttpRequest, QdrantVectorStore } from "./qdrant_store";
 import { RAGService, RetrievalMode } from "./rag_service";
 import { ProviderType, createLLMProvider, createEmbeddingProvider } from "./providers";
 import { MemexSettings, DEFAULT_SETTINGS } from "./settings";
+import { confirmAction } from "./confirm_modal";
+
+function isPersona(value: unknown): value is MemexSettings["personas"][number] {
+  const p = value as { name?: unknown; prompt?: unknown } | null;
+  return typeof p?.name === "string" && typeof p?.prompt === "string";
+}
 
 export default class MemexPlugin extends Plugin {
   settings: MemexSettings;
@@ -38,8 +44,8 @@ export default class MemexPlugin extends Plugin {
           this.settings.chunkOverlap
         );
 
-        const vectorStorePath = `${this.settings.chromaDbPath}/vectors.json`;
-        const contentHashesPath = `${this.settings.chromaDbPath}/content_hashes.json`;
+        const vectorStorePath = `${this.indexDir}/vectors.json`;
+        const contentHashesPath = `${this.indexDir}/content_hashes.json`;
         this.vectorStore = this.settings.vectorStoreType === "qdrant"
           ? this.createQdrantStore()
           : new LocalVectorStore(this.app, vectorStorePath);
@@ -53,8 +59,10 @@ export default class MemexPlugin extends Plugin {
           this.settings.autoIndexOnChange
         );
 
+        // As a child, its watchers are removed and pending writes flushed when the plugin unloads
+        this.addChild(this.ragService);
         await this.ragService.initialize();
-        new Notice("RAG Service initialized");
+        new Notice("RAG service initialized");
       } catch (error) {
         console.error("Failed to initialize RAG:", error);
         new Notice("Failed to initialize RAG. Check console for details.");
@@ -71,14 +79,14 @@ export default class MemexPlugin extends Plugin {
         this.settings.ragEnabled ? this.ragService : undefined
       )
     );
-    this.addRibbonIcon("message-square", "Chat with Journal", () => {
-      this.activateView();
+    this.addRibbonIcon("message-square", "Chat with journal", () => {
+      void this.activateView();
     });
 
     // Command: Auto Tag Current Note
     this.addCommand({
       id: "auto-tag-note",
-      name: "Auto Tag Current Note",
+      name: "Auto-tag current note",
       editorCallback: async (editor: Editor, view: MarkdownView) => {
         const content = editor.getValue();
         new Notice("Generating tags...");
@@ -99,7 +107,7 @@ export default class MemexPlugin extends Plugin {
     // Command: Extract Action Items
     this.addCommand({
       id: "extract-action-items",
-      name: "Extract Action Items",
+      name: "Extract action items",
       editorCallback: async (editor: Editor, view: MarkdownView) => {
         const content = editor.getValue();
         new Notice("Extracting action items...");
@@ -125,9 +133,9 @@ export default class MemexPlugin extends Plugin {
     // Command: Weekly Summary
     this.addCommand({
       id: "weekly-summary",
-      name: "Generate Weekly Summary",
+      name: "Generate weekly summary",
       callback: async () => {
-        new Notice("Generating Weekly Summary...");
+        new Notice("Generating weekly summary...");
         try {
           const now = new Date();
           const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -147,12 +155,13 @@ export default class MemexPlugin extends Plugin {
           );
           const summary = await this.processor.summarizeWeekly(notesContent);
 
-          // Folder Structure: Weekly Summaries/{Year}
+          // Folder structure: {weekly summary path}/{year}
           const year = now.getFullYear().toString();
-          const folderPath = `Weekly Summaries/${year}`;
+          const baseFolder = normalizePath(this.settings.weeklySummaryPath);
+          const folderPath = normalizePath(`${baseFolder}/${year}`);
 
-          if (!this.app.vault.getAbstractFileByPath("Weekly Summaries")) {
-            await this.app.vault.createFolder("Weekly Summaries");
+          if (!this.app.vault.getAbstractFileByPath(baseFolder)) {
+            await this.app.vault.createFolder(baseFolder);
           }
           if (!this.app.vault.getAbstractFileByPath(folderPath)) {
             await this.app.vault.createFolder(folderPath);
@@ -186,9 +195,9 @@ export default class MemexPlugin extends Plugin {
     // Command: Open Chat
     this.addCommand({
       id: "open-chat",
-      name: "Open Chat with Journal",
+      name: "Open chat with journal",
       callback: () => {
-        this.activateView();
+        void this.activateView();
       },
     });
 
@@ -198,7 +207,7 @@ export default class MemexPlugin extends Plugin {
         id: "upload-index-to-qdrant",
         name: "Upload local index to Qdrant",
         callback: async () => {
-          const local = new LocalVectorStore(this.app, `${this.settings.chromaDbPath}/vectors.json`);
+          const local = new LocalVectorStore(this.app, `${this.indexDir}/vectors.json`);
           const qdrant = this.createQdrantStore();
           try {
             await local.initialize();
@@ -224,14 +233,12 @@ export default class MemexPlugin extends Plugin {
 
       this.addCommand({
         id: "index-vault-rag",
-        name: "Index Vault for RAG",
+        name: "Index vault for RAG",
         callback: async () => {
           new Notice("Indexing vault... This may take a while.");
           try {
-            let progress = 0;
             let total = 0;
             await this.ragService.indexVault((current, totalFiles) => {
-              progress = current;
               total = totalFiles;
               if (current % 10 === 0 || current === totalFiles) {
                 new Notice(`Indexed ${current}/${totalFiles} files`);
@@ -247,12 +254,12 @@ export default class MemexPlugin extends Plugin {
 
       this.addCommand({
         id: "clear-rag-index",
-        name: "Clear RAG Index",
+        name: "Clear RAG index",
         callback: async () => {
           const target = this.settings.vectorStoreType === "qdrant"
             ? "the shared Qdrant index for ALL your devices"
             : "the RAG index";
-          if (confirm(`Are you sure you want to clear ${target}? This cannot be undone.`)) {
+          if (await confirmAction(this.app, `Clear ${target}? This cannot be undone.`, "Clear index")) {
             try {
               await this.ragService.clearIndex();
               new Notice("RAG index cleared");
@@ -266,7 +273,7 @@ export default class MemexPlugin extends Plugin {
 
       this.addCommand({
         id: "rag-index-stats",
-        name: "View RAG Index Statistics",
+        name: "View RAG index statistics",
         callback: async () => {
           try {
             const stats = await this.ragService.getIndexStats();
@@ -280,49 +287,23 @@ export default class MemexPlugin extends Plugin {
 
       this.addCommand({
         id: "debug-rag-retrieval",
-        name: "Debug RAG Retrieval",
-        callback: async () => {
-          // Prompt user for a query
-          // Since we don't have a native prompt UI, we'll use a simple workaround
-          // or just log the last chat message's retrieval.
-          // Better: Use a Modal to ask for input.
-          
-          // For now, let's use a simple prompt via the window object (not ideal but works for debug)
-          // Or better, let's just use the last active file's content or selection?
-          // Let's keep it simple: Log the top chunks for the currently selected text or just a fixed test.
-          
-          // Actually, let's create a simple Modal for input.
-          // Since I can't easily create a new class file right now without more overhead,
-          // I'll implement a simple inline Modal class or just use a hardcoded test for now?
-          // No, let's use the standard Obsidian Modal API if possible.
-          
-          // Let's just add a command that retrieves context for the *current selection* in the editor.
-          const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-          if (activeView) {
-            const editor = activeView.editor;
-            const selection = editor.getSelection();
-            if (selection) {
-              new Notice(`Debugging retrieval for: "${selection.substring(0, 20)}..."`);
-              console.log(`--- RAG DEBUG: "${selection}" ---`);
-              try {
-                const results = await this.ragService.retrieveContext(selection, 10, 0);
-                console.log("Retrieved Chunks:", results.retrievedChunks);
-                new Notice(`Retrieved ${results.retrievedChunks.length} chunks. Check console for details.`);
-                
-                results.retrievedChunks.forEach((chunk: any, i: number) => {
-                  console.log(`[${i}] Score: ${chunk.similarity.toFixed(4)} | File: ${chunk.metadata.filePath}`);
-                  console.log(chunk.content);
-                  console.log("---");
-                });
-              } catch (e) {
-                console.error("Debug error:", e);
-                new Notice("Error during debug retrieval");
-              }
-            } else {
-              new Notice("Please select some text to test retrieval");
-            }
-          } else {
-            new Notice("Open a note and select text to debug retrieval");
+        name: "Debug RAG retrieval",
+        // Shows which notes the retriever returns for the selected text
+        editorCallback: async (editor) => {
+          const selection = editor.getSelection();
+          if (!selection) {
+            new Notice("Select some text to test retrieval");
+            return;
+          }
+          try {
+            const results = await this.ragService.retrieveContext(selection, 10, 0);
+            const lines = results.retrievedChunks.map(
+              (chunk, i) => `${i + 1}. ${chunk.metadata.noteTitle} (${chunk.similarity.toFixed(3)})`
+            );
+            new Notice(`Top ${lines.length} matches:\n${lines.join("\n")}`, 10000);
+          } catch (error) {
+            console.error("Debug retrieval failed:", error);
+            new Notice("Error during debug retrieval");
           }
         },
       });
@@ -351,17 +332,23 @@ export default class MemexPlugin extends Plugin {
 
     // "Reveal" the leaf in case it is in a collapsed sidebar
     if (leaf) {
-      workspace.revealLeaf(leaf);
+      await workspace.revealLeaf(leaf);
     }
   }
 
   onunload() {}
 
+  /** Folder holding the local index: the configured path, or this plugin's own folder. */
+  get indexDir(): string {
+    const pluginDir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+    return normalizePath(this.settings.chromaDbPath || `${pluginDir}/chromadb`);
+  }
+
   /** Qdrant store over Obsidian's requestUrl, which works on desktop and mobile without CORS issues. */
   createQdrantStore(): QdrantVectorStore {
     const http: HttpRequest = async ({ url, method, headers, body }) => {
       const res = await requestUrl({ url, method, headers, body, throw: false });
-      let json: any = null;
+      let json: unknown = null;
       try {
         json = res.json;
       } catch {
@@ -378,7 +365,7 @@ export default class MemexPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<MemexSettings> | null);
   }
 
   async saveSettings() {
@@ -410,11 +397,10 @@ class MemexSettingTab extends PluginSettingTab {
 
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Memex Settings" });
 
     // ── Provider Selection ──────────────────────────────────────────────
     new Setting(containerEl)
-      .setName("AI Provider")
+      .setName("AI provider")
       .setDesc("Choose between a local LLM server or Google Gemini API")
       .addDropdown((dropdown) =>
         dropdown
@@ -431,10 +417,10 @@ class MemexSettingTab extends PluginSettingTab {
 
     // ── Local Provider Settings ─────────────────────────────────────────
     if (this.plugin.settings.providerType === "local") {
-      containerEl.createEl("h3", { text: "Local LLM Settings" });
+      new Setting(containerEl).setName("Local LLM").setHeading();
 
       new Setting(containerEl)
-        .setName("LLM Endpoint")
+        .setName("LLM endpoint")
         .setDesc("The URL of your local LLM server (e.g., http://localhost:1234)")
         .addText((text) =>
           text
@@ -447,7 +433,7 @@ class MemexSettingTab extends PluginSettingTab {
         );
 
       new Setting(containerEl)
-        .setName("Chat Model")
+        .setName("Chat model")
         .setDesc("The name of the chat model (e.g., qwen/qwen3-vl-4b)")
         .addText((text) =>
           text
@@ -460,7 +446,7 @@ class MemexSettingTab extends PluginSettingTab {
         );
 
       new Setting(containerEl)
-        .setName("Embedding Model")
+        .setName("Embedding model")
         .setDesc("The name of the embedding model for RAG")
         .addText((text) =>
           text
@@ -475,10 +461,10 @@ class MemexSettingTab extends PluginSettingTab {
 
     // ── Gemini Provider Settings ────────────────────────────────────────
     if (this.plugin.settings.providerType === "gemini") {
-      containerEl.createEl("h3", { text: "Google Gemini Settings" });
+      new Setting(containerEl).setName("Google Gemini").setHeading();
 
       new Setting(containerEl)
-        .setName("API Key")
+        .setName("API key")
         .setDesc("Your Gemini API key from Google AI Studio (aistudio.google.com/apikey)")
         .addText((text) =>
           text
@@ -491,7 +477,7 @@ class MemexSettingTab extends PluginSettingTab {
         );
 
       new Setting(containerEl)
-        .setName("Chat Model")
+        .setName("Chat model")
         .setDesc("Gemini model for chat (e.g., gemini-2.0-flash, gemini-2.5-pro)")
         .addText((text) =>
           text
@@ -504,7 +490,7 @@ class MemexSettingTab extends PluginSettingTab {
         );
 
       new Setting(containerEl)
-        .setName("Embedding Model")
+        .setName("Embedding model")
         .setDesc("Gemini model for embeddings (e.g., gemini-embedding-001)")
         .addText((text) =>
           text
@@ -518,11 +504,11 @@ class MemexSettingTab extends PluginSettingTab {
     }
 
     new Setting(containerEl)
-      .setName("Weekly Summary Path")
+      .setName("Weekly summary path")
       .setDesc("Folder to save weekly summaries")
       .addText((text) =>
         text
-          .setPlaceholder("Weekly Summaries")
+          .setPlaceholder(DEFAULT_SETTINGS.weeklySummaryPath)
           .setValue(this.plugin.settings.weeklySummaryPath)
           .onChange(async (value) => {
             this.plugin.settings.weeklySummaryPath = value;
@@ -531,7 +517,7 @@ class MemexSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-        .setName("Default Temperature")
+        .setName("Default temperature")
         .setDesc("Controls randomness (0.0 - 1.0)")
         .addSlider(slider => slider
             .setLimits(0, 1, 0.05)
@@ -543,7 +529,7 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     new Setting(containerEl)
-        .setName("Default Max Tokens")
+        .setName("Default max tokens")
         .setDesc("Maximum length of response")
         .addText(text => text
             .setValue(String(this.plugin.settings.defaultMaxTokens))
@@ -556,7 +542,7 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     // RAG Settings Section
-    containerEl.createEl("h2", { text: "RAG (Retrieval-Augmented Generation) Settings" });
+    new Setting(containerEl).setName("Retrieval (RAG)").setHeading();
 
     new Setting(containerEl)
         .setName("Enable RAG")
@@ -570,7 +556,7 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     new Setting(containerEl)
-        .setName("Chunk Size")
+        .setName("Chunk size")
         .setDesc("Number of words per chunk (default: 512)")
         .addText(text => text
             .setValue(String(this.plugin.settings.chunkSize))
@@ -583,7 +569,7 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     new Setting(containerEl)
-        .setName("Chunk Overlap")
+        .setName("Chunk overlap")
         .setDesc("Number of overlapping words between chunks (default: 50)")
         .addText(text => text
             .setValue(String(this.plugin.settings.chunkOverlap))
@@ -596,7 +582,7 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     new Setting(containerEl)
-        .setName("Top K Results")
+        .setName("Number of results")
         .setDesc("Number of most relevant chunks to retrieve (default: 5)")
         .addSlider(slider => slider
             .setLimits(1, 20, 1)
@@ -608,7 +594,7 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     new Setting(containerEl)
-        .setName("Similarity Threshold")
+        .setName("Similarity threshold")
         .setDesc("If no note scores at least this well, the question is treated as not covered by your vault (0.0 - 1.0, default: 0.58)")
         .addSlider(slider => slider
             .setLimits(0, 1, 0.01)
@@ -620,7 +606,7 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     new Setting(containerEl)
-        .setName("Retrieval Mode")
+        .setName("Retrieval mode")
         .setDesc("Hybrid adds keyword matching to semantic search, which finds exact names, terms and identifiers that semantic search alone often misses.")
         .addDropdown(dropdown => dropdown
             .addOption("hybrid", "Hybrid (semantic + keyword)")
@@ -632,7 +618,7 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     new Setting(containerEl)
-        .setName("Vector Store")
+        .setName("Vector store")
         .setDesc("Local keeps the index in this vault. Qdrant keeps one shared index that all your devices use. Reload the plugin after changing this.")
         .addDropdown(dropdown => dropdown
             .addOption("local", "Local (this vault)")
@@ -646,7 +632,7 @@ class MemexSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
         .setName("Qdrant URL")
-        .setDesc("Used when Vector Store is Qdrant, e.g. https://your-cluster.cloud.qdrant.io:6333")
+        .setDesc("Used when vector store is Qdrant, e.g. https://your-cluster.cloud.qdrant.io:6333")
         .addText(text => text
             .setPlaceholder("http://localhost:6333")
             .setValue(this.plugin.settings.qdrantUrl)
@@ -656,7 +642,7 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     new Setting(containerEl)
-        .setName("Qdrant API Key")
+        .setName("Qdrant API key")
         .setDesc("Leave empty for a local Qdrant without authentication")
         .addText(text => {
             text.inputEl.type = "password";
@@ -668,7 +654,7 @@ class MemexSettingTab extends PluginSettingTab {
         });
 
     new Setting(containerEl)
-        .setName("Qdrant Collection")
+        .setName("Qdrant collection")
         .setDesc("Every device pointing at the same collection shares one index")
         .addText(text => text
             .setValue(this.plugin.settings.qdrantCollection)
@@ -678,7 +664,7 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     new Setting(containerEl)
-        .setName("Auto-Index on Change")
+        .setName("Auto-index on change")
         .setDesc("Automatically update the index when notes are created, modified, or deleted")
         .addToggle(toggle => toggle
             .setValue(this.plugin.settings.autoIndexOnChange)
@@ -694,7 +680,7 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     new Setting(containerEl)
-        .setName("Citation Trust Mode")
+        .setName("Citation trust mode")
         .setDesc("Off: no citations. Relaxed: cites and verifies but shows answer with warnings. Strict: refuses to answer if citations fail verification.")
         .addDropdown(dropdown => dropdown
             .addOption("off", "Off")
@@ -707,11 +693,11 @@ class MemexSettingTab extends PluginSettingTab {
             }));
 
     new Setting(containerEl)
-        .setName("Excluded Folders")
+        .setName("Excluded folders")
         .setDesc("Comma-separated list of folder paths to exclude from indexing")
         .addTextArea(text => text
             .setValue(this.plugin.settings.excludedFolders.join(", "))
-            .setPlaceholder("e.g., Templates, Archive")
+            .setPlaceholder(DEFAULT_SETTINGS.excludedFolders.join(", "))
             .onChange(async (value) => {
                 this.plugin.settings.excludedFolders = value
                     .split(",")
@@ -726,7 +712,7 @@ class MemexSettingTab extends PluginSettingTab {
                 }
             }));
 
-    containerEl.createEl("h3", { text: "Personas" });
+    new Setting(containerEl).setName("Personas").setHeading();
     
     // Simple JSON editor for personas for now to avoid complex UI
     new Setting(containerEl)
@@ -737,12 +723,12 @@ class MemexSettingTab extends PluginSettingTab {
             .setPlaceholder("[]")
             .onChange(async (value) => {
                 try {
-                    const parsed = JSON.parse(value);
-                    if (Array.isArray(parsed)) {
+                    const parsed: unknown = JSON.parse(value);
+                    if (Array.isArray(parsed) && parsed.every(isPersona)) {
                         this.plugin.settings.personas = parsed;
                         await this.plugin.saveSettings();
                     }
-                } catch (e) {
+                } catch {
                     // Invalid JSON, ignore
                 }
             }));
