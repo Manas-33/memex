@@ -57,9 +57,7 @@ export class RAGService extends Component {
 
       // Set up file watchers if auto-indexing is enabled
       if (this.autoIndexOnChange) {
-        // Vault "create" events also fire for every existing file while the vault
-        // loads; waiting for the layout means only genuinely new notes get indexed
-        this.app.workspace.onLayoutReady(() => this.setupFileWatchers());
+        this.app.workspace.onLayoutReady(() => void this.startAutoIndexing());
       }
     } catch (error) {
       console.error("Failed to initialize RAG Service:", error);
@@ -128,6 +126,38 @@ export class RAGService extends Component {
   /**
    * Set up file watchers for auto-indexing
    */
+  /**
+   * Vault "create" events also fire for every existing file while the vault loads,
+   * so watchers start once it's ready. One catch-up pass then brings the index in line
+   * with changes made while Obsidian was closed (e.g. synced from another device):
+   * new and edited notes are indexed (unchanged ones are skipped by their content hash,
+   * so they cost no embedding calls) and deleted or newly excluded notes are removed.
+   */
+  private async startAutoIndexing(): Promise<void> {
+    this.setupFileWatchers();
+    try {
+      await this.indexVault();
+      await this.removeMissingNotes();
+    } catch (error) {
+      console.error("Startup indexing failed:", error);
+    }
+  }
+
+  private async removeMissingNotes(): Promise<void> {
+    const present = new Set(this.app.vault.getMarkdownFiles().map((file) => file.path));
+    let removed = 0;
+    for (const path of [...this.contentHashes.keys()]) {
+      if (!present.has(path) || !this.shouldIndexFile(path)) {
+        this.contentHashes.delete(path);
+        await this.vectorStore.deleteDocumentsByPath(path);
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      this.saveContentHashes();
+    }
+  }
+
   private setupFileWatchers(): void {
     // Watch for file modifications – just mark as dirty, no API calls yet
     this.registerEvent(this.app.vault.on("modify", (file: TAbstractFile) => {
