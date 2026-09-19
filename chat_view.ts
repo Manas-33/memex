@@ -976,6 +976,8 @@ If a source was used but the answer misrepresents it, set "used": true but "supp
           }
           const detail = msgDiv?.querySelector<HTMLElement>(`.memex-citation-detail[data-citation-id="${citationId}"]`);
           if (detail) {
+            // A cited passage the checker didn't count as used sits under "Also searched"
+            detail.closest<HTMLElement>(".citations-more")?.addClass("is-expanded");
             detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
             detail.addClass("is-highlighted");
             window.setTimeout(() => detail.removeClass("is-highlighted"), 1500);
@@ -1027,28 +1029,48 @@ If a source was used but the answer misrepresents it, set "used": true but "supp
       panel.toggleClass("is-expanded", !panel.hasClass("is-expanded"));
     });
 
-    for (const citation of citations) {
-      const isVerified = citation.reason && citation.reason !== "";
-      const status = !isVerified ? "is-unchecked" : citation.supported ? "is-supported" : "is-unsupported";
-      const item = list.createDiv({
-        cls: ["memex-citation-detail", status],
-        attr: { "data-citation-id": String(citation.id) },
-      });
+    // Search always returns Top K passages, so most may be unrelated to the answer.
+    // List the ones the checker found the answer used; tuck the rest away. Without
+    // verdicts (checker failed or didn't run) there's no telling, so list them all.
+    const others = totalVerified > 0 ? citations.filter(c => !verifiedCitations.includes(c)) : [];
+    for (const citation of totalVerified > 0 ? verifiedCitations : citations) {
+      this.renderCitationDetail(list, citation);
+    }
 
-      const header = item.createDiv({ cls: "citation-detail-header" });
-      header.createSpan({
-        text: `[${citation.id}] From: ${citation.sourceChunk.noteTitle}`
+    if (others.length > 0) {
+      const more = list.createDiv({ cls: "citations-more" });
+      const moreToggle = more.createDiv({ cls: "citations-more-toggle", text: `Also searched (${others.length})` });
+      const moreList = more.createDiv({ cls: "citations-more-list" });
+      moreToggle.addEventListener("click", () => {
+        more.toggleClass("is-expanded", !more.hasClass("is-expanded"));
       });
-      header.createSpan({
-        cls: ["citation-status", status],
-        text: !isVerified ? "Source" : citation.supported ? "Verified" : "Not supported",
-      });
-
-      item.createDiv({ cls: "citation-passage", text: citation.sourceChunk.content });
-
-      if (!citation.supported) {
-        item.createDiv({ cls: "citation-reason", text: citation.reason });
+      for (const citation of others) {
+        this.renderCitationDetail(moreList, citation);
       }
+    }
+  }
+
+  private renderCitationDetail(parent: HTMLElement, citation: CitationVerification) {
+    const isVerified = citation.reason && citation.reason !== "";
+    const status = !isVerified ? "is-unchecked" : citation.supported ? "is-supported" : "is-unsupported";
+    const item = parent.createDiv({
+      cls: ["memex-citation-detail", status],
+      attr: { "data-citation-id": String(citation.id) },
+    });
+
+    const header = item.createDiv({ cls: "citation-detail-header" });
+    header.createSpan({
+      text: `[${citation.id}] From: ${citation.sourceChunk.noteTitle}`
+    });
+    header.createSpan({
+      cls: ["citation-status", status],
+      text: !isVerified ? "Source" : citation.supported ? "Verified" : "Not supported",
+    });
+
+    item.createDiv({ cls: "citation-passage", text: citation.sourceChunk.content });
+
+    if (!citation.supported) {
+      item.createDiv({ cls: "citation-reason", text: citation.reason });
     }
   }
 
